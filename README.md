@@ -122,6 +122,11 @@ La posture de sécurité et de confidentialité est détaillée dans **[SECURITY
 
 ## 📄 Licence
 
-[MIT](LICENSE) — © 2026 LouLLabs.
+Projet sous licence [MIT](LICENSE) — © 2026 LouLLabs.
+
+Les composants tiers conservent leurs propres licences (MIT, BSD, et **LGPL** pour
+Qt/PySide6 et FFmpeg). Le détail et la conformité LGPL sont documentés dans
+**[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)**. Les poids du modèle Whisper
+(OpenAI, MIT) sont téléchargés à la demande et ne sont pas redistribués ici.
 
 <p align="center"><sub>Un outil <a href="https://www.loullabs.com/">LouLLabs</a>.</sub></p>
