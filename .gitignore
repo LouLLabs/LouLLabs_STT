@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# PyInstaller
+build/
+dist/
+*.manifest
+
+# Config utilisateur (genere au runtime dans %APPDATA%)
+config.json
+
+# OS / editeurs
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.log
