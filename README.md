@@ -43,7 +43,7 @@ aucune télémétrie. Le modèle Whisper tourne sur le CPU (quantifié `int8`).
 **Prérequis :** Windows 10/11 · [Python 3.10+](https://www.python.org/) (cocher *« Add Python to PATH »*) · un micro.
 
 ```bash
-git clone https://github.com/<votre-compte>/LouLLabs_STT.git
+git clone https://github.com/LouLLabs/LouLLabs_STT.git
 cd LouLLabs_STT
 pip install -r requirements.txt
 python loullabs_stt.py
