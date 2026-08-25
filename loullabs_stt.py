@@ -1,5 +1,5 @@
 """
-LouLLabs STT — Speech to Text
+LouLLabs STT - Speech to Text
 Hold the key (F8 by default) -> Speak -> Release -> Text is pasted
 100% local . Whisper . English (configurable)
 
@@ -184,7 +184,7 @@ def _normalize(s: str) -> str:
 # hallucination through rather than "eat" a real sentence. So the blocklist
 # contains ONLY multi-word phrases never dictated on purpose; frequent short
 # words ("thanks", "yes", "ok"...) are NOT here (a user may dictate them)
-# — they are handled by the model's confidence (no_speech / logprob).
+# - they are handled by the model's confidence (no_speech / logprob).
 HALLUCINATION_BLOCKLIST = {_normalize(x) for x in [
     "Sous-titres realises par la communaute d'Amara.org",
     "Sous-titres realises para la communaute d'Amara.org",
@@ -272,7 +272,7 @@ def set_start_with_windows(enabled: bool) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  HARDWARE DETECTION (native, zero dependencies) — for diagnostics
+#  HARDWARE DETECTION (native, zero dependencies) - for diagnostics
 # ═══════════════════════════════════════════════════════════════
 
 def detect_ram_gb():
@@ -330,7 +330,7 @@ def calibrate_mic(device=None, seconds=1.2):
     RMS values: a one-off noise (mouse click, keypress, breath) only affects
     a few windows and therefore does not skew the estimate. The threshold never
     drops below 0.006 (validated on real recordings) and is capped at 0.02.
-    Reminder: RMS cannot, ON ITS OWN, suppress a real sentence — it is
+    Reminder: RMS cannot, ON ITS OWN, suppress a real sentence - it is
     always combined with the model's confidence (no_speech / logprob).
     Returns (threshold, noise_rms) or None.
     """
@@ -787,7 +787,7 @@ class GlassOverlay(QWidget):
             p.drawLine(QPointF(cx, cy - 4), QPointF(cx, cy + 2))
             p.drawLine(QPointF(cx - 3, cy + 3.5), QPointF(cx + 3, cy + 3.5))
         p.setPen(QColor(255, 255, 255, 235)); p.setFont(self._title_font())
-        p.drawText(text_x, mid_y - 1, "LouLLabs STT — ready")
+        p.drawText(text_x, mid_y - 1, "LouLLabs STT - ready")
         p.setPen(QColor(255, 255, 255, 140)); p.setFont(self._small_font())
         p.drawText(text_x, mid_y + 16, "Hold " + self.hotkey_label + " to speak")
 
@@ -1391,7 +1391,7 @@ class SettingsDialog(QDialog):
             msg = f"Custom key: {self._custom_label}  (overrides the list above)"
             # A key that produces a character will ALSO type it while held.
             if len((self._custom_label or "").strip()) == 1 and self._custom_label.strip().isprintable():
-                msg += "\n⚠ This key also types its character — a function key (F8…) is usually better."
+                msg += "\n⚠ This key also types its character - a function key (F8…) is usually better."
             self.lbl_key.setText(msg)
             self.cb_key.setEnabled(False)
         else:
@@ -1448,7 +1448,7 @@ class SettingsDialog(QDialog):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  WELCOME SCREEN (first launch) — detection only, no forced benchmark
+#  WELCOME SCREEN (first launch) - detection only, no forced benchmark
 # ═══════════════════════════════════════════════════════════════
 
 class WelcomeDialog(QDialog):
@@ -1489,8 +1489,8 @@ class WelcomeDialog(QDialog):
         model_id = self.cfg.get("model", "small")
         friendly = next((f for m, f, _ in RECOMMENDED_MODELS if m == model_id), model_id)
 
-        acc = f"Automatic  —  {gpu} detected" if gpu else "Automatic  —  processor (CPU)"
-        ram = f"{avail:.1f} GB free / {total:.1f} GB" if total else "—"
+        acc = f"Automatic  -  {gpu} detected" if gpu else "Automatic  -  processor (CPU)"
+        ram = f"{avail:.1f} GB free / {total:.1f} GB" if total else "-"
 
         root.addLayout(self._row("🎙️", "Microphone", str(mic)[:46]))
         root.addLayout(self._row("⚡", "Acceleration", acc[:64]))
@@ -1520,7 +1520,7 @@ class WelcomeDialog(QDialog):
 def main():
     print(f"""
   ========================================================
-       LouLLabs STT — Speech to Text  v{APP_VERSION}
+       LouLLabs STT - Speech to Text  v{APP_VERSION}
        Hold a key  ->  Speak  ->  Release  ->  Pasted
        100% local  -  Whisper  -  Native Win32 input
   ========================================================

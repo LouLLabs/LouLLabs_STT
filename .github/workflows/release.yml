@@ -36,13 +36,13 @@ jobs:
           files: dist/LouLLabs_STT.exe
           name: LouLLabs STT ${{ github.ref_name }}
           body: |
-            **LouLLabs STT** — 100% local voice dictation for Windows.
+            **LouLLabs STT** - 100% local voice dictation for Windows.
 
             ### Installation
-            1. Download `LouLLabs_STT.exe` below (a single file — nothing to unzip).
+            1. Download `LouLLabs_STT.exe` below (a single file - nothing to unzip).
             2. Run it.
             3. On the **first launch**, the Whisper model (~460 MB, default `small`) downloads just once. After that, everything is offline.
-            4. Hold **F8**, speak, release — the text is inserted.
+            4. Hold **F8**, speak, release - the text is inserted.
 
             > The executable is not signed: Windows SmartScreen may display a warning ("More info" → "Run anyway").
             > Third-party licenses (including LGPL Qt/FFmpeg): see `docs/THIRD_PARTY_LICENSES.md`.

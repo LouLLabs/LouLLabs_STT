@@ -1,5 +1,5 @@
 """
-LouLLabs STT — Standalone benchmark harness (v2)
+LouLLabs STT - Standalone benchmark harness (v2)
 ================================================
 
 Decide the engine/backend based on MEASUREMENTS, not intuition. It measures what
@@ -26,7 +26,7 @@ Usage:
     python tools/benchmark.py --backend cpu --model large-v3-turbo --compute int8
 
 Backends: `cpu` and `cuda` work. `vulkan` / `rocm` (whisper.cpp) are
-extension points left as TODO — to be wired in AFTER this benchmark.
+extension points left as TODO - to be wired in AFTER this benchmark.
 """
 
 import os
@@ -91,7 +91,7 @@ def _normalize(s):
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
     return re.sub(r"\s+", " ", re.sub(r"[^0-9a-z ]+", " ", s)).strip()
 
-# Raw model hallucination phrases — kept verbatim to match raw model output.
+# Raw model hallucination phrases - kept verbatim to match raw model output.
 BLOCKLIST = {_normalize(x) for x in [
     "Sous-titres realises par la communaute d'Amara.org",
     "Sous-titrage ST' 501",
@@ -146,7 +146,7 @@ def record_missing(force=False):
     print("For each phrase: Enter to start, read it, Enter to stop.\n")
     for p in todo:
         print(f"[{p['cat']}]  ({p['cls']})")
-        print(f'  Read: "{p["ref"]}"' if p["ref"] else "  (SAY NOTHING — silence test)")
+        print(f'  Read: "{p["ref"]}"' if p["ref"] else "  (SAY NOTHING - silence test)")
         input("  Enter to start...")
         chunks = []
         st = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -213,7 +213,7 @@ def _run_faster_whisper(corpus, model_size, compute, device, repeats, method,
 
     print(f"\nPreparing model « {model_size} » ({compute}) on {device}...")
     print("  ⏳  First launch: downloading ~1.5 GB from Hugging Face.")
-    print("      A progress bar will appear — LET IT FINISH (several minutes).\n")
+    print("      A progress bar will appear - LET IT FINISH (several minutes).\n")
     n_threads = threads if (threads and threads > 0) else max(1, os.cpu_count() or 4)
     print(f"  CPU threads: {n_threads} · beam: {beam}")
     t0 = time.perf_counter()
@@ -340,7 +340,7 @@ def main():
     args = ap.parse_args()
 
     print("=" * 44)
-    print("  LouLLabs STT — Benchmark")
+    print("  LouLLabs STT - Benchmark")
     print("=" * 44)
 
     if args.record:
@@ -358,7 +358,7 @@ def main():
         res = run_backend(args.backend, corpus, args.model, args.compute,
                           args.repeats, args.insert, args.threads, args.beam)
     except NotImplementedError as e:
-        print(f"\n{e}\n(To be implemented in wave 2 — see the TODO in run_backend.)")
+        print(f"\n{e}\n(To be implemented in wave 2 - see the TODO in run_backend.)")
         sys.exit(2)
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted. The model may not have finished downloading.")

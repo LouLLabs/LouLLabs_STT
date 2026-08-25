@@ -1,4 +1,4 @@
-# Security & privacy — LouLLabs STT
+# Security & privacy - LouLLabs STT
 
 LouLLabs STT is designed to be **local and private by default**. This document
 describes precisely what the program does, does not do, and how to report a problem.
@@ -48,7 +48,7 @@ This is the most important security point, and it has been redesigned for this v
 
 The code is scanned with [`bandit`](https://bandit.readthedocs.io/):
 **0 High-severity issues, 0 Medium.** The only remaining alerts are security
-`try/except` blocks (resource cleanup, optional Win32 API) — intentional and with
+`try/except` blocks (resource cleanup, optional Win32 API) - intentional and with
 no security impact.
 
 ```bash
@@ -59,13 +59,13 @@ bandit -r loullabs_stt.py
 ## Unsigned executable
 
 The `.exe` produced by PyInstaller is not digitally signed: Windows SmartScreen may
-display a warning on first launch. This is not a flaw — you can also run the program
+display a warning on first launch. This is not a flaw - you can also run the program
 directly from the sources (`python loullabs_stt.py`) for full transparency.
 
 **To consider for wider distribution:** signing the executable with a code-signing
 certificate (e.g. an OV/EV certificate, or free options such as Azure Trusted
 Signing) removes the SmartScreen warning and is the last "professional polish" step
-before distributing the `.exe` broadly. It has a cost and is optional — running from
+before distributing the `.exe` broadly. It has a cost and is optional - running from
 source needs no signature.
 
 ## Reporting a vulnerability

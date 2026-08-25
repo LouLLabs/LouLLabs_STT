@@ -1,4 +1,4 @@
-# Third-party licenses — LouLLabs STT
+# Third-party licenses - LouLLabs STT
 
 LouLLabs STT is distributed under the **MIT** license (see [`LICENSE`](LICENSE)).
 It relies on third-party components, each under its own license, listed below.
@@ -39,9 +39,9 @@ provided that the end user can **replace** these libraries with their own versio
 
 This condition is met:
 
-1. **Source distribution** — the user installs the libraries themselves via
+1. **Source distribution** - the user installs the libraries themselves via
    `pip install -r requirements.txt`; they therefore have full control over them.
-2. **Binary distribution** — the executable is compiled in **PyInstaller `--onedir`**
+2. **Binary distribution** - the executable is compiled in **PyInstaller `--onedir`**
    mode (see [`LouLLabs_STT.spec`](LouLLabs_STT.spec)). The Qt and FFmpeg libraries
    remain **separate** `.dll` files in the `dist/LouLLabs_STT/` folder and can be
    replaced with a compatible version, in accordance with the LGPL.

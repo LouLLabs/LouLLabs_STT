@@ -16,7 +16,7 @@ LouLLabs_STT.exe
 # User config (created at runtime in %APPDATA%)
 config.json
 
-# Benchmark data — your own voice recordings and results (never commit)
+# Benchmark data - your own voice recordings and results (never commit)
 tools/benchmark_data/*.wav
 tools/benchmark_data/*.txt
 tools/benchmark_data/result_*.json
