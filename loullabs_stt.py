@@ -65,7 +65,7 @@ except ImportError as e:
 
 
 APP_NAME = "LouLLabs_STT"
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 
 # ═══════════════════════════════════════════════════════════════
 #  CHEMINS / RESSOURCES
@@ -104,6 +104,7 @@ DEFAULT_CONFIG = {
                                 # "collage" = presse-papier + Ctrl+V
     "restore_clipboard": True,  # (mode collage) restaure le presse-papier apres coup
     "first_run_done": False,    # ecran de bienvenue affiche une seule fois
+    "silence_rms": 0.006,       # seuil de silence, calibre automatiquement sur le micro
 }
 
 # Touches proposees pour le push-to-talk -> code virtuel Win32.
@@ -287,6 +288,23 @@ def detect_mic():
     try:
         return sd.query_devices(kind="input").get("name")
     except Exception:
+        return None
+
+
+def calibrate_mic(device=None, seconds=1.0):
+    """Mesure le bruit de fond et propose un seuil de silence adapte au micro.
+    Retourne (seuil, bruit_rms) ou None. Le seuil ne descend jamais sous 0.006
+    (valide sur enregistrements reels) et est plafonne : combine a la confiance
+    du modele, il ne peut jamais supprimer une vraie phrase."""
+    try:
+        rec = sd.rec(int(seconds * 16000), samplerate=16000, channels=1,
+                     dtype="float32", device=device)
+        sd.wait()
+        noise = float(np.sqrt(np.mean(np.square(rec))))
+        threshold = min(0.02, max(0.006, noise * 8.0))
+        return round(threshold, 4), round(noise, 5)
+    except Exception as e:
+        print(f"  Calibration micro impossible : {e}")
         return None
 
 
@@ -1015,7 +1033,8 @@ class STTEngine:
             rms = float(np.sqrt(np.mean(np.square(audio))))
         except Exception:
             rms = 1.0
-        if rms < SILENCE_RMS and logprob < -0.8 and len(norm) < 40:
+        silence_rms = self.cfg.get("silence_rms", SILENCE_RMS)
+        if rms < silence_rms and logprob < -0.8 and len(norm) < 40:
             print(f"  Quasi-silence peu fiable (rms={rms:.4f}, lp={logprob:.2f}) : {text!r}")
             return True
 
@@ -1250,6 +1269,15 @@ class SettingsDialog(QDialog):
         self.chk_clip.setChecked(bool(self.cfg.get("restore_clipboard", True)))
         root.addWidget(self.chk_clip)
 
+        # Recalibration micro (bruit de fond -> seuil de silence)
+        cal_row = QHBoxLayout()
+        self.btn_cal = QPushButton("Recalibrer le micro"); self.btn_cal.setObjectName("cancel")
+        self.btn_cal.clicked.connect(self._recalibrate)
+        self.lbl_cal = QLabel(f"seuil actuel : {self.cfg.get('silence_rms', 0.006)}")
+        self.lbl_cal.setObjectName("hint")
+        cal_row.addWidget(self.btn_cal); cal_row.addWidget(self.lbl_cal); cal_row.addStretch(1)
+        root.addLayout(cal_row)
+
         root.addWidget(self._sep())
 
         # Boutons
@@ -1260,6 +1288,19 @@ class SettingsDialog(QDialog):
         b_save.clicked.connect(self._save)
         btns.addWidget(b_cancel); btns.addWidget(b_save)
         root.addLayout(btns)
+
+    def _recalibrate(self):
+        self.btn_cal.setText("Mesure du bruit...")
+        self.btn_cal.setEnabled(False)
+        QApplication.processEvents()
+        cal = calibrate_mic(self.cb_mic.currentData())
+        if cal:
+            self.cfg["silence_rms"] = cal[0]
+            self.lbl_cal.setText(f"calibre : seuil {cal[0]} (bruit {cal[1]})")
+        else:
+            self.lbl_cal.setText("calibration impossible")
+        self.btn_cal.setText("Recalibrer le micro")
+        self.btn_cal.setEnabled(True)
 
     def _save(self):
         self.cfg["hotkey"] = self.cb_key.currentData()
@@ -1280,9 +1321,10 @@ class SettingsDialog(QDialog):
 # ═══════════════════════════════════════════════════════════════
 
 class WelcomeDialog(QDialog):
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, calibration=None):
         super().__init__()
         self.cfg = cfg
+        self.calibration = calibration   # (seuil, bruit) ou None
         self.setWindowTitle("Bienvenue - LouLLabs STT")
         self.setWindowIcon(app_icon())
         self.setStyleSheet(SETTINGS_QSS)
@@ -1323,6 +1365,9 @@ class WelcomeDialog(QDialog):
         root.addLayout(self._row("⚡", "Acceleration", acc[:64]))
         root.addLayout(self._row("🧠", "Memoire", ram))
         root.addLayout(self._row("🧩", "Modele", f"{friendly}  ({model_id})"))
+        if self.calibration:
+            root.addLayout(self._row("🎚️", "Micro calibre",
+                                     f"seuil de silence auto : {self.calibration[0]}"))
 
         root.addWidget(self._sep())
         note = QLabel("Le modele (~1,5 Go) se telecharge a votre premiere dictee, "
@@ -1429,10 +1474,14 @@ def main():
         app.quit()
     act_quit.triggered.connect(quitter)
 
-    # ── Ecran de bienvenue (une seule fois) ──
+    # ── Ecran de bienvenue + calibration micro (une seule fois) ──
     if not cfg.get("first_run_done"):
+        cal = calibrate_mic(cfg.get("mic_device"))   # ~1 s, mesure le bruit de fond
+        if cal:
+            cfg["silence_rms"] = cal[0]
+            print(f"  Micro calibre : bruit={cal[1]}, seuil de silence={cal[0]}")
         try:
-            WelcomeDialog(cfg).exec()
+            WelcomeDialog(cfg, calibration=cal).exec()
         except Exception as e:
             print(f"  Bienvenue : {e}")
         cfg["first_run_done"] = True
