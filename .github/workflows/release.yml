@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build (.exe, --onedir)
+        run: pyinstaller --noconfirm LouLLabs_STT.spec
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path dist/LouLLabs_STT -DestinationPath LouLLabs_STT-windows-x64.zip
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LouLLabs_STT-windows-x64.zip
+          name: LouLLabs STT ${{ github.ref_name }}
+          body: |
+            **LouLLabs STT** — dictée vocale 100 % locale pour Windows.
+
+            ### Installation
+            1. Téléchargez `LouLLabs_STT-windows-x64.zip` ci-dessous, puis décompressez-le.
+            2. Lancez `LouLLabs_STT\LouLLabs_STT.exe`.
+            3. Au **premier lancement**, le modèle Whisper (~1,5 Go) se télécharge une seule fois. Ensuite, tout est hors-ligne.
+            4. Maintenez **F8**, parlez, relâchez — le texte s'insère.
+
+            > L'exécutable n'est pas signé : Windows SmartScreen peut afficher un avertissement (« Informations complémentaires » → « Exécuter quand même »).
+            > Licences tierces (dont LGPL Qt/FFmpeg) : voir `THIRD_PARTY_LICENSES.md`.
