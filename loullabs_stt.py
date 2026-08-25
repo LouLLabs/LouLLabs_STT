@@ -65,7 +65,7 @@ except ImportError as e:
 
 
 APP_NAME = "LouLLabs_STT"
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 
 # ═══════════════════════════════════════════════════════════════
 #  CHEMINS / RESSOURCES
@@ -103,6 +103,7 @@ DEFAULT_CONFIG = {
     "insert_method": "frappe",  # "frappe" = saisie directe (fiable, sans presse-papier)
                                 # "collage" = presse-papier + Ctrl+V
     "restore_clipboard": True,  # (mode collage) restaure le presse-papier apres coup
+    "first_run_done": False,    # ecran de bienvenue affiche une seule fois
 }
 
 # Touches proposees pour le push-to-talk -> code virtuel Win32.
@@ -115,11 +116,12 @@ KEY_VK = {
 }
 
 MODEL_CHOICES = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
-# Seuls 3 modeles sont exposes dans l'interface (le reste = config.json avance)
+# Seuls 3 modeles sont exposes, avec des libelles PRODUIT (pas techniques).
+# Le jour ou le moteur change, l'UX ne bouge pas. (id, libelle, note)
 RECOMMENDED_MODELS = [
-    ("large-v3-turbo", "Recommande — meilleure qualite / rapidite"),
-    ("small",          "Plus leger"),
-    ("base",           "Tres leger"),
+    ("large-v3-turbo", "Precis",    "recommande"),
+    ("small",          "Equilibre", "plus leger"),
+    ("base",           "Rapide",    "tres leger"),
 ]
 COMPUTE_CHOICES = ["int8", "int8_float16", "float16", "float32"]
 LANG_CHOICES = [
@@ -232,6 +234,58 @@ def set_start_with_windows(enabled: bool) -> bool:
     except Exception as e:
         print(f"  Demarrage Windows : {e}")
         return False
+
+
+# ═══════════════════════════════════════════════════════════════
+#  DETECTION MATERIEL (natif, zero dependance) — pour le diagnostic
+# ═══════════════════════════════════════════════════════════════
+
+def detect_ram_gb():
+    """(total_Go, dispo_Go) via GlobalMemoryStatusEx, sinon (None, None)."""
+    try:
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MEMORYSTATUSEX(); m.dwLength = ctypes.sizeof(m)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return m.ullTotalPhys / (1024 ** 3), m.ullAvailPhys / (1024 ** 3)
+    except Exception:
+        return None, None
+
+
+def detect_gpu():
+    """Nom du GPU via EnumDisplayDevices (aucun subprocess), sinon None."""
+    try:
+        class DISPLAY_DEVICE(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
+                        ("DeviceString", wintypes.WCHAR * 128), ("StateFlags", wintypes.DWORD),
+                        ("DeviceID", wintypes.WCHAR * 128), ("DeviceKey", wintypes.WCHAR * 128)]
+        names, i = [], 0
+        while i < 16:
+            dd = DISPLAY_DEVICE(); dd.cb = ctypes.sizeof(dd)
+            if not ctypes.windll.user32.EnumDisplayDevicesW(None, i, ctypes.byref(dd), 0):
+                break
+            s = dd.DeviceString
+            if s and s not in names:
+                names.append(s)
+            i += 1
+        for n in names:   # privilegie un GPU nomme
+            if any(k in n for k in ("Radeon", "NVIDIA", "GeForce", "RTX", "Arc", "Intel")):
+                return n
+        return names[0] if names else None
+    except Exception:
+        return None
+
+
+def detect_mic():
+    """Nom du micro par defaut, sinon None."""
+    try:
+        return sd.query_devices(kind="input").get("name")
+    except Exception:
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -892,12 +946,27 @@ class STTEngine:
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=500),
                 without_timestamps=True,
+                no_speech_threshold=0.6,
             )
-            text = " ".join(s.text.strip() for s in segments if s.text.strip()).strip()
+            # Un seul passage : on recolte le texte ET les signaux de confiance
+            parts, nsp, alp, cr = [], [], [], []
+            for s in segments:
+                t = s.text.strip()
+                if t:
+                    parts.append(t)
+                nsp.append(float(getattr(s, "no_speech_prob", 0.0)))
+                alp.append(float(getattr(s, "avg_logprob", 0.0)))
+                cr.append(float(getattr(s, "compression_ratio", 1.0)))
+            text = " ".join(parts).strip()
+            metrics = {
+                "no_speech": (sum(nsp) / len(nsp)) if nsp else 1.0,
+                "avg_logprob": (sum(alp) / len(alp)) if alp else -10.0,
+                "compression": (max(cr) if cr else 1.0),
+            }
             elapsed = time.time() - t0
             self.touch()
 
-            if text and not self._should_suppress(text, audio):
+            if text and not self._should_suppress(text, audio, metrics):
                 self._paste(text)
                 print(f"  [{elapsed:.1f}s] -> {text}")
                 self.overlay.signals.show_success.emit(text)
@@ -908,21 +977,46 @@ class STTEngine:
             print(f"  Erreur de transcription : {e}")
             self.overlay.signals.show_error.emit("Erreur de transcription")
 
-    def _should_suppress(self, text: str, audio) -> bool:
-        """Filtre les hallucinations de Whisper (silence / appui accidentel)."""
+    def _should_suppress(self, text: str, audio, m: dict) -> bool:
+        """Filtre multi-signal des hallucinations de Whisper.
+
+        Combine plusieurs indices plutot qu'une seule blacklist ou le seul
+        volume (RMS) : texte vide, phrase connue, repetition, et surtout la
+        CONFIANCE du modele (no_speech_prob / avg_logprob). Objectif : ne
+        jamais 'manger' une vraie phrase, meme dite doucement.
+        """
         norm = _normalize(text)
         if not norm:
             return True
+
+        # 1) Filet : hallucinations textuelles connues (exactes)
         if norm in HALLUCINATION_BLOCKLIST:
-            print(f"  Hallucination ignoree : {text!r}")
+            print(f"  Hallucination connue ignoree : {text!r}")
             return True
+
+        # 2) Boucle de repetition / charabia (ratio de compression eleve)
+        if m.get("compression", 1.0) > 2.5:
+            print(f"  Repetition suspecte (cr={m['compression']:.2f}) ignoree : {text!r}")
+            return True
+
+        no_speech = m.get("no_speech", 0.0)
+        logprob = m.get("avg_logprob", 0.0)
+
+        # 3) Le modele est tres confiant qu'il n'y a PAS de parole, et peu sur de lui
+        if no_speech > 0.85 and logprob < -1.0:
+            print(f"  Absence de parole (no_speech={no_speech:.2f}, lp={logprob:.2f}) : {text!r}")
+            return True
+
+        # 4) Quasi-silence UNIQUEMENT combine a une faible confiance du modele
+        #    (un 'oui' clair mais doux garde un bon logprob -> non filtre)
         try:
             rms = float(np.sqrt(np.mean(np.square(audio))))
         except Exception:
             rms = 1.0
-        if rms < SILENCE_RMS and len(norm) < 40:
-            print(f"  Quasi-silence (rms={rms:.4f}), texte ignore : {text!r}")
+        if rms < SILENCE_RMS and logprob < -0.8 and len(norm) < 40:
+            print(f"  Quasi-silence peu fiable (rms={rms:.4f}, lp={logprob:.2f}) : {text!r}")
             return True
+
         return False
 
     def _paste(self, text: str):
@@ -935,11 +1029,12 @@ class STTEngine:
                 return
             print("  Saisie directe indisponible, bascule sur le presse-papier.")
 
-        # ── Methode presse-papier + Ctrl+V ──
+        # ── Methode presse-papier + Ctrl+V (sauvegarde/restauration garantie) ──
+        restore = self.cfg.get("restore_clipboard", True)
         previous = None
-        if self.cfg.get("restore_clipboard", True):
+        if restore:
             try:
-                previous = pyperclip.paste()
+                previous = pyperclip.paste()   # contenu a preserver
             except Exception:
                 previous = None
         try:
@@ -948,14 +1043,17 @@ class STTEngine:
             print(f"  Presse-papier inaccessible ({e}), saisie directe.")
             type_unicode(text)
             return
-        time.sleep(0.12)                 # laisse Windows s'approprier le presse-papier
-        send_ctrl_v()
-        if previous:                     # restaure l'ancien contenu apres le collage
-            time.sleep(0.6)
-            try:
-                pyperclip.copy(previous)
-            except Exception:
-                pass
+        try:
+            time.sleep(0.12)                   # Windows s'approprie le presse-papier
+            send_ctrl_v()
+        finally:
+            # restauration TOUJOURS executee, meme si le collage a echoue
+            if restore and previous is not None:
+                time.sleep(0.4)                # laisse l'app consommer le collage
+                try:
+                    pyperclip.copy(previous)
+                except Exception:
+                    pass
 
     def stop(self):
         if self.stream:
@@ -1080,10 +1178,10 @@ class SettingsDialog(QDialog):
         # Modele (3 choix exposes ; autres modeles = config.json avance)
         grid.addWidget(QLabel("Modele"), r, 0)
         self.cb_model = QComboBox()
-        for mid, desc in RECOMMENDED_MODELS:
-            self.cb_model.addItem(f"{mid}  —  {desc}", mid)
+        for mid, friendly, note in RECOMMENDED_MODELS:
+            self.cb_model.addItem(f"{friendly}   ·   {mid} ({note})", mid)
         cur = self.cfg.get("model", "large-v3-turbo")
-        if cur not in [m for m, _ in RECOMMENDED_MODELS]:
+        if cur not in [m for m, _, _ in RECOMMENDED_MODELS]:
             self.cb_model.addItem(f"{cur}  (avance)", cur)
         mdl_idx = next((i for i in range(self.cb_model.count())
                         if self.cb_model.itemData(i) == cur), 0)
@@ -1173,6 +1271,68 @@ class SettingsDialog(QDialog):
         save_config(self.cfg)
         self.on_apply(self.cfg)
         self.accept()
+
+
+# ═══════════════════════════════════════════════════════════════
+#  ECRAN DE BIENVENUE (1er lancement) — detection seule, sans benchmark impose
+# ═══════════════════════════════════════════════════════════════
+
+class WelcomeDialog(QDialog):
+    def __init__(self, cfg: dict):
+        super().__init__()
+        self.cfg = cfg
+        self.setWindowTitle("Bienvenue - LouLLabs STT")
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(SETTINGS_QSS)
+        self.setMinimumWidth(460)
+        self._build()
+
+    def _row(self, emoji, label, value):
+        h = QHBoxLayout()
+        a = QLabel(f"{emoji}  {label}"); a.setMinimumWidth(150)
+        b = QLabel(value); b.setObjectName("hint"); b.setWordWrap(True)
+        h.addWidget(a); h.addStretch(1); h.addWidget(b, 1)
+        return h
+
+    def _sep(self):
+        f = QFrame(); f.setObjectName("sep"); f.setFixedHeight(1)
+        return f
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 26, 28, 22); root.setSpacing(12)
+
+        title = QLabel("Bienvenue dans LouLLabs STT"); title.setObjectName("title")
+        root.addWidget(title)
+        sub = QLabel("Dictee vocale 100% locale. Voici votre configuration :")
+        sub.setObjectName("hint"); root.addWidget(sub)
+        root.addWidget(self._sep())
+
+        mic = detect_mic() or "peripherique par defaut"
+        gpu = detect_gpu()
+        total, avail = detect_ram_gb()
+        model_id = self.cfg.get("model", "large-v3-turbo")
+        friendly = next((f for m, f, _ in RECOMMENDED_MODELS if m == model_id), model_id)
+
+        acc = f"Automatique  —  {gpu} detecte" if gpu else "Automatique  —  processeur (CPU)"
+        ram = f"{avail:.1f} Go dispo / {total:.1f} Go" if total else "—"
+
+        root.addLayout(self._row("🎙️", "Microphone", str(mic)[:46]))
+        root.addLayout(self._row("⚡", "Acceleration", acc[:64]))
+        root.addLayout(self._row("🧠", "Memoire", ram))
+        root.addLayout(self._row("🧩", "Modele", f"{friendly}  ({model_id})"))
+
+        root.addWidget(self._sep())
+        note = QLabel("Le modele (~1,5 Go) se telecharge a votre premiere dictee, "
+                      "puis tout fonctionne hors-ligne.\n"
+                      "Maintenez F8, parlez, relachez : le texte s'ecrit.")
+        note.setObjectName("hint"); note.setWordWrap(True); root.addWidget(note)
+
+        btns = QHBoxLayout(); btns.addStretch(1)
+        b = QPushButton("Commencer"); b.setObjectName("save")
+        b.clicked.connect(self.accept)
+        btns.addWidget(b)
+        root.addLayout(btns)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1266,6 +1426,15 @@ def main():
         tray.hide()
         app.quit()
     act_quit.triggered.connect(quitter)
+
+    # ── Ecran de bienvenue (une seule fois) ──
+    if not cfg.get("first_run_done"):
+        try:
+            WelcomeDialog(cfg).exec()
+        except Exception as e:
+            print(f"  Bienvenue : {e}")
+        cfg["first_run_done"] = True
+        save_config(cfg)
 
     # ── Message de bienvenue ──
     QTimer.singleShot(400, overlay.signals.show_ready.emit)

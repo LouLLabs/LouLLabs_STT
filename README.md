@@ -34,7 +34,8 @@ aucune télémétrie. Le modèle Whisper tourne sur le CPU (quantifié `int8`).
 - **RAM ~0 au repos** — le modèle se charge à la demande et se **décharge automatiquement** après inactivité ; il est préchargé pendant que vous parlez pour masquer la latence.
 - **Deux modes simples** — *Automatique* (par défaut), *Performance* (prêt instantanément) ou *Économie* (libère les ressources au repos). Aucun jargon technique exposé.
 - **Transcription fidèle** — le texte est transcrit **fidèlement à votre voix, sans reformulation par une IA**. Aucun post-traitement, aucun LLM, aucune « correction intelligente ».
-- **Anti-hallucination** — un appui accidentel sur un silence n'écrit rien : les hallucinations connues de Whisper (« Sous-titres réalisés par… », etc.) et les quasi-silences sont filtrés.
+- **Anti-hallucination (multi-signal)** — un appui accidentel n'écrit rien : filtrage combinant les hallucinations connues de Whisper (« Sous-titres réalisés par… »), la **confiance du modèle** (`no_speech_prob`, `avg_logprob`, ratio de compression) et le niveau audio — sans jamais « manger » une vraie phrase, même dite doucement.
+- **Diagnostic au 1er lancement** — détection du micro, de la mémoire et du GPU, puis c'est parti (aucun benchmark imposé).
 - **Insertion fiable** — le texte est **tapé directement** dans le champ actif (sans toucher au presse-papier), avec repli automatique sur Ctrl+V.
 - **Réglable sans code** — clic droit sur l'icône de la barre des tâches → *Paramètres* (touche, langue, modèle, micro, mode, démarrage Windows).
 - **Interface soignée** — overlay « liquid glass » translucide et mascotte LouLLabs.
@@ -101,6 +102,23 @@ Config stockée dans `%APPDATA%\LouLLabs_STT\config.json` (les modèles avancés
 
 Double-cliquez sur **`build.bat`** (ou `py -m PyInstaller --noconfirm LouLLabs_STT.spec`).
 Résultat : `dist\LouLLabs_STT\LouLLabs_STT.exe` (icône incluse). L'exécutable n'est pas signé — voir [SECURITY.md](SECURITY.md).
+
+---
+
+## 🔬 Benchmark (avancé)
+
+Un harnais autonome — `tools/benchmark.py` — mesure ce qui compte pour la dictée
+courte : latence **cold/warm start** et **qualité (WER)** sur un corpus français
+(courant, rapide, chiffres, noms propres, ponctuation, silence…). Il sert à décider
+un futur backend GPU **sur des mesures**, pas sur une intuition.
+
+```bash
+python tools/benchmark.py            # enregistre le corpus puis mesure (CPU)
+python tools/benchmark.py --run      # remesure sur le corpus déjà enregistré
+```
+
+Les backends GPU (`vulkan` / `rocm` via whisper.cpp) sont des points d'extension
+laissés volontairement en TODO — à brancher **après** ce benchmark.
 
 ---
 
