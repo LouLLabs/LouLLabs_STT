@@ -291,16 +291,26 @@ def detect_mic():
         return None
 
 
-def calibrate_mic(device=None, seconds=1.0):
-    """Mesure le bruit de fond et propose un seuil de silence adapte au micro.
-    Retourne (seuil, bruit_rms) ou None. Le seuil ne descend jamais sous 0.006
-    (valide sur enregistrements reels) et est plafonne : combine a la confiance
-    du modele, il ne peut jamais supprimer une vraie phrase."""
+def calibrate_mic(device=None, seconds=1.2):
+    """Mesure ROBUSTE du bruit de fond -> seuil de silence adapte au micro.
+
+    On decoupe l'echantillon en fenetres de 100 ms et on prend la MEDIANE des
+    RMS : un bruit ponctuel (clic souris, touche, souffle) n'affecte que
+    quelques fenetres et ne fausse donc pas l'estimation. Le seuil ne descend
+    jamais sous 0.006 (valide sur enregistrements reels) et est plafonne a 0.02.
+    Rappel : le RMS ne peut, A LUI SEUL, supprimer une vraie phrase — il est
+    toujours combine a la confiance du modele (no_speech / logprob).
+    Retourne (seuil, bruit_rms) ou None.
+    """
     try:
         rec = sd.rec(int(seconds * 16000), samplerate=16000, channels=1,
                      dtype="float32", device=device)
         sd.wait()
-        noise = float(np.sqrt(np.mean(np.square(rec))))
+        a = rec.flatten()
+        win = 1600  # 100 ms
+        wins = [float(np.sqrt(np.mean(np.square(a[i:i + win]))))
+                for i in range(0, max(1, len(a) - win), win)]
+        noise = float(np.median(wins)) if wins else float(np.sqrt(np.mean(np.square(a))))
         threshold = min(0.02, max(0.006, noise * 8.0))
         return round(threshold, 4), round(noise, 5)
     except Exception as e:
