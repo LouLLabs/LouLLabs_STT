@@ -10,11 +10,18 @@ env/
 build/
 dist/
 *.manifest
+# Built one-file app (created at the root by build.bat)
+LouLLabs_STT.exe
 
-# Config utilisateur (genere au runtime dans %APPDATA%)
+# User config (created at runtime in %APPDATA%)
 config.json
 
-# OS / editeurs
+# Benchmark data — your own voice recordings and results (never commit)
+tools/benchmark_data/*.wav
+tools/benchmark_data/*.txt
+tools/benchmark_data/result_*.json
+
+# OS / editors
 Thumbs.db
 desktop.ini
 .DS_Store

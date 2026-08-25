@@ -6,7 +6,7 @@ datas = [('assets/icon.ico', 'assets'),
          ('assets/mascot_square.png', 'assets'),
          ('assets/mascot_full.png', 'assets')]
 binaries = []
-# Input 100% Win32 natif : aucune dependance 'keyboard'.
+# 100% native Win32 input: no 'keyboard' dependency.
 hiddenimports = ['sounddevice', 'pyperclip', 'faster_whisper', 'ctranslate2',
                  'onnxruntime', 'av', 'PySide6.QtWidgets', 'PySide6.QtCore',
                  'PySide6.QtGui']
@@ -31,16 +31,21 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# One-file build: everything is bundled into a SINGLE LouLLabs_STT.exe,
+# so it can live at the project root (or anywhere) with no sibling files.
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='LouLLabs_STT',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -48,13 +53,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/icon.ico',
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='LouLLabs_STT',
 )

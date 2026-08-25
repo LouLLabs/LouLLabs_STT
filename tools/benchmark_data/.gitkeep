@@ -1,0 +1,2 @@
+Benchmark recordings are generated locally on first run and are intentionally
+NOT committed (they contain your own voice). Run: python tools/benchmark.py

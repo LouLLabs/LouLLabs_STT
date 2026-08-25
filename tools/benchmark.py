@@ -1,32 +1,32 @@
 """
-LouLLabs STT — Harnais de benchmark autonome (v2)
-=================================================
+LouLLabs STT — Standalone benchmark harness (v2)
+================================================
 
-Décider le moteur/backend sur des MESURES, pas sur une intuition. Il mesure ce
-qui compte pour la dictée courte :
+Decide the engine/backend based on MEASUREMENTS, not intuition. It measures what
+matters for short dictation:
 
-  - latence "cold start"     (modèle non chargé -> texte)
-  - latence "warm start"     P50 / P95 sur N répétitions (la STABILITÉ compte
-                             autant que la moyenne)
-  - latence PERÇUE           inférence + insertion (F8 relâché -> texte visible)
-  - qualité                  WER (Word Error Rate) vs le texte réellement lu
-  - contrôle du filtre       aucune vraie phrase courte ne doit être "mangée"
-                             (faux positif), le silence doit être filtré
+  - "cold start" latency     (model not loaded -> text)
+  - "warm start" latency     P50 / P95 over N repetitions (STABILITY matters
+                             as much as the average)
+  - PERCEIVED latency        inference + insertion (F8 released -> visible text)
+  - quality                  WER (Word Error Rate) vs the text actually read
+  - filter control           no real short phrase should be "eaten"
+                             (false positive), silence must be filtered out
 
-Le corpus est réparti par LONGUEUR (micro / court / moyen / long) car le
-comportement CPU vs GPU peut être radicalement différent selon la durée.
+The corpus is split by LENGTH (micro / short / medium / long) because CPU vs GPU
+behavior can differ radically depending on duration.
 
-Cet outil est SÉPARÉ de l'application (il n'alourdit pas LouLLabs STT).
+This tool is SEPARATE from the application (it does not bloat LouLLabs STT).
 
-Usage :
-    python tools/benchmark.py                 # enregistre le manquant puis mesure
-    python tools/benchmark.py --record        # (ré)enregistrer Tout le corpus
-    python tools/benchmark.py --run           # mesurer sur le corpus existant
+Usage:
+    python tools/benchmark.py                 # record what's missing then measure
+    python tools/benchmark.py --record        # (re)record the entire corpus
+    python tools/benchmark.py --run           # measure on the existing corpus
     python tools/benchmark.py --repeats 5 --insert frappe
     python tools/benchmark.py --backend cpu --model large-v3-turbo --compute int8
 
-Backends : `cpu` et `cuda` fonctionnent. `vulkan` / `rocm` (whisper.cpp) sont
-des points d'extension laissés en TODO — à brancher APRÈS ce benchmark.
+Backends: `cpu` and `cuda` work. `vulkan` / `rocm` (whisper.cpp) are
+extension points left as TODO — to be wired in AFTER this benchmark.
 """
 
 import os
@@ -43,54 +43,55 @@ import numpy as np
 SAMPLE_RATE = 16000
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark_data")
 
-# Corpus : id, catégorie, classe de longueur, référence, attendu.
-#   expect="text"   -> DOIT être écrit (un filtrage = FAUX POSITIF, grave)
-#   expect="filter" -> DOIT être filtré (silence)
-# Les "micro" servent aussi de contrôle anti-faux-positifs (mots courts réels).
+# Corpus: id, category, length class, reference, expected.
+#   expect="text"   -> MUST be written (filtering it = FALSE POSITIVE, serious)
+#   expect="filter" -> MUST be filtered out (silence)
+# The "micro" items also serve as an anti-false-positive control (real short words).
 PROMPTS = [
-    # --- micro (1-2 mots) : ne doivent JAMAIS être filtrés ---
-    dict(id="m_oui",   cat="Micro : oui",    cls="micro", expect="text",   ref="oui"),
-    dict(id="m_non",   cat="Micro : non",    cls="micro", expect="text",   ref="non"),
-    dict(id="m_ok",    cat="Micro : ok",     cls="micro", expect="text",   ref="ok"),
-    dict(id="m_merci", cat="Micro : merci",  cls="micro", expect="text",   ref="merci"),
-    dict(id="m_test",  cat="Micro : test",   cls="micro", expect="text",   ref="test"),
-    dict(id="m_court", cat="Micro : à demain", cls="micro", expect="text", ref="à demain"),
-    # --- court (3-10 s) ---
-    dict(id="courant",     cat="Courant",     cls="court", expect="text",
-         ref="Bonjour, je teste la dictée vocale et j'aimerais voir si elle fonctionne correctement."),
-    dict(id="rapide",      cat="Rapide",      cls="court", expect="text",
-         ref="Il faut vraiment que je me dépêche parce que le train part dans cinq minutes."),
-    dict(id="chiffres",    cat="Chiffres",    cls="court", expect="text",
-         ref="Le total est de mille deux cent quarante-sept euros et trente-huit centimes."),
-    dict(id="noms",        cat="Noms propres", cls="court", expect="text",
-         ref="Loïc travaille chez LouLLabs à Paris et à Barcelone."),
-    dict(id="ponctuation", cat="Ponctuation", cls="court", expect="text",
-         ref="Attends, tu es sûr ? Oui, absolument ! On y va."),
-    # --- moyen (10-30 s) ---
-    dict(id="lent",        cat="Lent",        cls="moyen", expect="text",
-         ref="Je parle... très... lentement... pour tester... la transcription."),
-    dict(id="longue",      cat="Phrase longue", cls="moyen", expect="text",
-         ref="Quand j'appuie sur la touche puis que je relâche, le texte doit apparaître immédiatement là où se trouve mon curseur, sans que je perde ce que j'avais copié auparavant."),
+    # --- micro (1-2 words): must NEVER be filtered out ---
+    dict(id="m_oui",   cat="Micro: yes",    cls="micro", expect="text",   ref="yes"),
+    dict(id="m_non",   cat="Micro: no",     cls="micro", expect="text",   ref="no"),
+    dict(id="m_ok",    cat="Micro: ok",     cls="micro", expect="text",   ref="ok"),
+    dict(id="m_merci", cat="Micro: thanks", cls="micro", expect="text",   ref="thanks"),
+    dict(id="m_test",  cat="Micro: test",   cls="micro", expect="text",   ref="test"),
+    dict(id="m_court", cat="Micro: see you tomorrow", cls="micro", expect="text", ref="see you tomorrow"),
+    # --- short (3-10 s) ---
+    dict(id="courant",     cat="Everyday",    cls="court", expect="text",
+         ref="Hello, I'm testing voice dictation and I'd like to see if it works correctly."),
+    dict(id="rapide",      cat="Fast",        cls="court", expect="text",
+         ref="I really need to hurry because the train leaves in five minutes."),
+    dict(id="chiffres",    cat="Numbers",     cls="court", expect="text",
+         ref="The total is one thousand two hundred forty-seven dollars and thirty-eight cents."),
+    dict(id="noms",        cat="Proper nouns", cls="court", expect="text",
+         ref="Loic works at LouLLabs in Paris and Barcelona."),
+    dict(id="ponctuation", cat="Punctuation", cls="court", expect="text",
+         ref="Wait, are you sure? Yes, absolutely! Let's go."),
+    # --- medium (10-30 s) ---
+    dict(id="lent",        cat="Slow",        cls="moyen", expect="text",
+         ref="I am speaking... very... slowly... to test... the transcription."),
+    dict(id="longue",      cat="Long sentence", cls="moyen", expect="text",
+         ref="When I press the key and then release it, the text should appear immediately where my cursor is, without me losing what I had copied beforehand."),
     # --- long (30-60 s) ---
-    dict(id="long",        cat="Long (paragraphe)", cls="long", expect="text",
-         ref="Je vais lire un paragraphe assez long afin de mesurer le comportement du moteur "
-             "sur une dictée continue. L'objectif n'est pas de transcrire des heures d'audio, "
-             "mais de vérifier que la latence et la qualité restent stables quand je parle "
-             "pendant une trentaine de secondes sans m'arrêter, en articulant normalement, "
-             "avec quelques chiffres comme douze, quarante-huit et deux mille vingt-six."),
-    # --- silence : DOIT être filtré ---
-    dict(id="silence",     cat="Silence complet", cls="silence", expect="filter", ref=""),
+    dict(id="long",        cat="Long (paragraph)", cls="long", expect="text",
+         ref="I am going to read a fairly long paragraph in order to measure the engine's behavior "
+             "on continuous dictation. The goal is not to transcribe hours of audio, "
+             "but to verify that latency and quality stay stable when I speak "
+             "for around thirty seconds without stopping, articulating normally, "
+             "with a few numbers like twelve, forty-eight, and two thousand twenty-six."),
+    # --- silence: MUST be filtered out ---
+    dict(id="silence",     cat="Complete silence", cls="silence", expect="filter", ref=""),
 ]
 
-# ── Réglages du filtre (miroir de l'app) ────────────────────────
+# ── Filter settings (mirror of the app) ─────────────────────────
 SILENCE_RMS = 0.006
-BLOCKLIST = None  # rempli plus bas
+BLOCKLIST = None  # filled in below
 
 def _normalize(s):
     s = unicodedata.normalize("NFD", s.lower())
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
     return re.sub(r"\s+", " ", re.sub(r"[^0-9a-z ]+", " ", s)).strip()
 
+# Raw model hallucination phrases — kept verbatim to match raw model output.
 BLOCKLIST = {_normalize(x) for x in [
     "Sous-titres realises par la communaute d'Amara.org",
     "Sous-titrage ST' 501",
@@ -127,13 +128,13 @@ def should_suppress(text, audio, m):
     return False
 
 def insertion_ms(text, method):
-    """Coût d'insertion PERÇU (modélisé, cohérent avec l'app)."""
+    """PERCEIVED insertion cost (modeled, consistent with the app)."""
     if method == "collage":
-        return 120.0                      # sleep avant Ctrl+V (fixe)
-    return min(len(text) * 0.6, 60.0)     # frappe Unicode SendInput ~ proportionnel, plafonné
+        return 120.0                      # sleep before Ctrl+V (fixed)
+    return min(len(text) * 0.6, 60.0)     # Unicode SendInput typing ~ proportional, capped
 
 
-# ── Enregistrement (seulement les échantillons manquants) ───────
+# ── Recording (only the missing samples) ────────────────────────
 def record_missing(force=False):
     import sounddevice as sd
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -141,16 +142,16 @@ def record_missing(force=False):
             if force or not os.path.exists(os.path.join(DATA_DIR, p["id"] + ".wav"))]
     if not todo:
         return
-    print(f"\n=== Enregistrement ({len(todo)} échantillon(s)) ===")
-    print("Pour chaque phrase : Entrée pour démarrer, lisez, Entrée pour arrêter.\n")
+    print(f"\n=== Recording ({len(todo)} sample(s)) ===")
+    print("For each phrase: Enter to start, read it, Enter to stop.\n")
     for p in todo:
         print(f"[{p['cat']}]  ({p['cls']})")
-        print(f'  Lisez : "{p["ref"]}"' if p["ref"] else "  (NE DITES RIEN — test du silence)")
-        input("  Entrée pour démarrer...")
+        print(f'  Read: "{p["ref"]}"' if p["ref"] else "  (SAY NOTHING — silence test)")
+        input("  Enter to start...")
         chunks = []
         st = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
                             callback=lambda indata, *_: chunks.append(indata.copy()))
-        st.start(); input("  ... enregistrement, Entrée pour arrêter."); st.stop(); st.close()
+        st.start(); input("  ... recording, Enter to stop."); st.stop(); st.close()
         audio = (np.concatenate(chunks).flatten() if chunks
                  else np.zeros(SAMPLE_RATE, dtype="float32"))
         _save_wav(os.path.join(DATA_DIR, p["id"] + ".wav"), audio)
@@ -179,20 +180,22 @@ def load_corpus():
 
 
 # ── Backends ────────────────────────────────────────────────────
-def run_backend(name, corpus, model_size, compute, repeats, method):
+def run_backend(name, corpus, model_size, compute, repeats, method, threads=None, beam=3):
     if name in ("cpu", "cuda"):
-        return _run_faster_whisper(corpus, model_size, compute, name, repeats, method)
+        return _run_faster_whisper(corpus, model_size, compute, name, repeats,
+                                   method, threads, beam)
     if name in ("vulkan", "rocm"):
-        # TODO (vague 2) : brancher whisper.cpp (Vulkan / ROCm) ici, MÊME interface.
-        # https://github.com/ggml-org/whisper.cpp  (backends Vulkan / HIP)
-        raise NotImplementedError(f"Backend '{name}' à brancher (whisper.cpp).")
-    raise ValueError(f"Backend inconnu : {name}")
+        # TODO (wave 2): wire up whisper.cpp (Vulkan / ROCm) here, SAME interface.
+        # https://github.com/ggml-org/whisper.cpp  (Vulkan / HIP backends)
+        raise NotImplementedError(f"Backend '{name}' to be wired up (whisper.cpp).")
+    raise ValueError(f"Unknown backend: {name}")
 
-def _run_faster_whisper(corpus, model_size, compute, device, repeats, method):
+def _run_faster_whisper(corpus, model_size, compute, device, repeats, method,
+                        threads=None, beam=3):
     from faster_whisper import WhisperModel
 
     def transcribe(model, audio):
-        segs, _ = model.transcribe(audio, language="fr", beam_size=3, vad_filter=True,
+        segs, _ = model.transcribe(audio, language="en", beam_size=beam, vad_filter=True,
                                    vad_parameters=dict(min_silence_duration_ms=500),
                                    without_timestamps=True, no_speech_threshold=0.6)
         parts, ns, lp, cr = [], [], [], []
@@ -208,17 +211,19 @@ def _run_faster_whisper(corpus, model_size, compute, device, repeats, method):
              "cr": max(cr) if cr else 1.0}
         return text, m
 
-    print(f"\nPréparation du modèle « {model_size} » ({compute}) sur {device}...")
-    print("  ⏳  1er lancement : téléchargement ~1,5 Go depuis Hugging Face.")
-    print("      Une barre de progression va s'afficher — LAISSEZ FINIR (plusieurs minutes).\n")
+    print(f"\nPreparing model « {model_size} » ({compute}) on {device}...")
+    print("  ⏳  First launch: downloading ~1.5 GB from Hugging Face.")
+    print("      A progress bar will appear — LET IT FINISH (several minutes).\n")
+    n_threads = threads if (threads and threads > 0) else max(1, os.cpu_count() or 4)
+    print(f"  CPU threads: {n_threads} · beam: {beam}")
     t0 = time.perf_counter()
     model = WhisperModel(model_size, device=device, compute_type=compute,
-                         cpu_threads=max(1, (os.cpu_count() or 2) // 2), num_workers=1)
-    transcribe(model, corpus[0][1])   # 1re inférence = "cold start"
+                         cpu_threads=n_threads, num_workers=1)
+    transcribe(model, corpus[0][1])   # 1st inference = "cold start"
     cold = time.perf_counter() - t0
-    print(f"  ✓ Modèle prêt (cold start {cold:.1f} s).\n")
+    print(f"  ✓ Model ready (cold start {cold:.1f} s).\n")
 
-    print(f"Mesure de {len(corpus)} échantillons × {repeats} répétition(s) :")
+    print(f"Measuring {len(corpus)} samples × {repeats} repetition(s):")
     rows = []
     for idx, (p, audio) in enumerate(corpus, 1):
         print(f"  [{idx:>2}/{len(corpus)}] {p['id']:<12} ({p['cls']})", end=" ", flush=True)
@@ -232,25 +237,26 @@ def _run_faster_whisper(corpus, model_size, compute, device, repeats, method):
         rows.append(dict(p=p, text=text, lat_ms=lats, suppressed=sup, wer=w,
                          perceived_ms=float(np.median(lats)) + insertion_ms(text, method)))
         wtxt = "-" if w is None else f"WER {w * 100:.0f}%"
-        flag = "FILTRÉ" if sup else "ok"
+        flag = "FILTERED" if sup else "ok"
         if p["expect"] == "text" and sup:
-            flag = "⚠️ FAUX POSITIF"
+            flag = "⚠️ FALSE POSITIVE"
         print(f"→ {np.median(lats):>5.0f} ms  {wtxt:<9} {flag}")
     return dict(backend=device, model=model_size, compute=compute, repeats=repeats,
-                method=method, cold_start_s=round(cold, 2), rows=rows)
+                method=method, threads=n_threads, beam=beam,
+                cold_start_s=round(cold, 2), rows=rows)
 
 
-# ── Rapport ─────────────────────────────────────────────────────
+# ── Report ──────────────────────────────────────────────────────
 def report(res):
     rows = res["rows"]
     print("\n" + "=" * 72)
-    print(f"  Backend {res['backend']} · modèle {res['model']} ({res['compute']}) · "
-          f"{res['repeats']} rép. · insertion « {res['method']} »")
+    print(f"  Backend {res['backend']} · model {res['model']} ({res['compute']}) · "
+          f"{res['repeats']} rep. · insertion « {res['method']} »")
     print("=" * 72)
-    print(f"  Cold start : {res['cold_start_s']:.2f} s\n")
+    print(f"  Cold start: {res['cold_start_s']:.2f} s\n")
 
-    # Latence + WER par classe de longueur
-    print(f"  {'Classe':<10}{'n':>3}{'P50':>9}{'P95':>9}{'perçu P50':>12}{'WER moy':>10}")
+    # Latency + WER per length class
+    print(f"  {'Class':<10}{'n':>3}{'P50':>9}{'P95':>9}{'perceived P50':>14}{'avg WER':>10}")
     for cls in ["micro", "court", "moyen", "long"]:
         rs = [r for r in rows if r["p"]["cls"] == cls]
         if not rs:
@@ -261,25 +267,25 @@ def report(res):
         p50 = np.median(all_lat); p95 = np.percentile(all_lat, 95)
         wtxt = f"{np.mean(wl) * 100:.1f}%" if wl else "-"
         print(f"  {cls:<10}{len(rs):>3}{p50:>8.0f}ms{p95:>8.0f}ms"
-              f"{np.median(perc):>10.0f}ms{wtxt:>10}")
+              f"{np.median(perc):>12.0f}ms{wtxt:>10}")
 
-    # Contrôle du filtre : faux positifs / faux négatifs
-    print("\n  Contrôle du filtre (faux positif = vraie phrase supprimée = GRAVE)")
+    # Filter control: false positives / false negatives
+    print("\n  Filter control (false positive = real phrase suppressed = SERIOUS)")
     fp = fn = 0
     for r in rows:
         exp = r["p"]["expect"]
         if exp == "text" and r["suppressed"]:
-            verdict = "❌ FAUX POSITIF"; fp += 1
+            verdict = "❌ FALSE POSITIVE"; fp += 1
         elif exp == "filter" and not r["suppressed"]:
-            verdict = "⚠️  faux négatif"; fn += 1
+            verdict = "⚠️  false negative"; fn += 1
         else:
             verdict = "✓"
         print(f"    {verdict:<16} {r['p']['cat']:<22} -> {r['text'][:42]!r}")
-    print(f"\n  Bilan filtre : {fp} faux positif(s), {fn} faux négatif(s).")
+    print(f"\n  Filter summary: {fp} false positive(s), {fn} false negative(s).")
     if fp:
-        print("  ⚠️  Au moins une vraie phrase a été filtrée : desserrer les seuils.")
+        print("  ⚠️  At least one real phrase was filtered out: loosen the thresholds.")
 
-    # Agrégats globaux (hors silence)
+    # Global aggregates (excluding silence)
     spoken = [r for r in rows if r["p"]["expect"] == "text"]
     all_lat = [x for r in spoken for x in r["lat_ms"]]
     wl = [r["wer"] for r in spoken if r["wer"] is not None]
@@ -296,38 +302,41 @@ def report(res):
             json.dump(serial, f, indent=2, ensure_ascii=False)
         saved = out
     except Exception as e:
-        saved = f"(échec écriture JSON : {e})"
+        saved = f"(JSON write failed: {e})"
 
-    # ── Résumé copiable (même sans le JSON) ──
+    # ── Copyable summary (even without the JSON) ──
     print("\n" + "=" * 44)
     print("  LouLLabs Benchmark")
     print("=" * 44)
-    print(f"  Modèle       : {res['model']}")
-    print(f"  Backend      : {res['backend']}   Précision : {res['compute']}")
-    print(f"  Répétitions  : {res['repeats']}")
+    print(f"  Model        : {res['model']}")
+    print(f"  Backend      : {res['backend']}   Precision: {res['compute']}")
+    print(f"  Repetitions  : {res['repeats']}")
     print(f"  Cold start   : {res['cold_start_s']:.1f} s")
-    print(f"  Latence P50  : {np.median(all_lat):.0f} ms")
-    print(f"  Latence P95  : {np.percentile(all_lat, 95):.0f} ms")
-    print(f"  Perçue P50   : {np.median(perc):.0f} ms  (inférence + insertion « {res['method']} »)")
-    print(f"  WER moyen    : {np.mean(wl) * 100:.1f} %" if wl else "  WER moyen    : -")
-    print(f"  Faux rejets  : {fp} / {len(spoken)}")
+    print(f"  Latency P50  : {np.median(all_lat):.0f} ms")
+    print(f"  Latency P95  : {np.percentile(all_lat, 95):.0f} ms")
+    print(f"  Perceived P50: {np.median(perc):.0f} ms  (inference + insertion « {res['method']} »)")
+    print(f"  Average WER  : {np.mean(wl) * 100:.1f} %" if wl else "  Average WER  : -")
+    print(f"  False rejects: {fp} / {len(spoken)}")
     print("=" * 44)
-    print(f"  JSON : {saved}")
+    print(f"  JSON: {saved}")
     print("=" * 44)
-    print("  ↳ Copie-colle ce bloc si tu ne récupères pas le JSON.")
-    print("  Décision = meilleure EXPÉRIENCE globale (latence perçue P50/P95 +")
-    print("  WER + faux rejets + stabilité + cold start), pas « le plus rapide ».\n")
+    print("  ↳ Copy-paste this block if you can't retrieve the JSON.")
+    print("  Decision = best overall EXPERIENCE (perceived latency P50/P95 +")
+    print("  WER + false rejects + stability + cold start), not « the fastest ».\n")
 
 
 def main():
     ap = argparse.ArgumentParser(description="Benchmark LouLLabs STT")
-    ap.add_argument("--record", action="store_true", help="(ré)enregistrer TOUT le corpus")
-    ap.add_argument("--run", action="store_true", help="mesurer sans (ré)enregistrer")
+    ap.add_argument("--record", action="store_true", help="(re)record the ENTIRE corpus")
+    ap.add_argument("--run", action="store_true", help="measure without (re)recording")
     ap.add_argument("--backend", default="cpu", help="cpu | cuda | vulkan | rocm")
     ap.add_argument("--model", default="large-v3-turbo")
     ap.add_argument("--compute", default="int8")
-    ap.add_argument("--repeats", type=int, default=3, help="répétitions pour P50/P95")
+    ap.add_argument("--repeats", type=int, default=3, help="repetitions for P50/P95")
     ap.add_argument("--insert", default="frappe", choices=["frappe", "collage"])
+    ap.add_argument("--threads", type=int, default=0,
+                    help="CPU cores (0 = all, default). Key lever on CPU.")
+    ap.add_argument("--beam", type=int, default=3, help="beam size (1 = faster, 5 = more accurate)")
     args = ap.parse_args()
 
     print("=" * 44)
@@ -337,30 +346,30 @@ def main():
     if args.record:
         record_missing(force=True)
     elif not args.run:
-        record_missing(force=False)   # enregistre uniquement le manquant
+        record_missing(force=False)   # record only what's missing
 
     corpus = load_corpus()
     if corpus is None:
-        print("Corpus incomplet. Lancez d'abord :  python tools/benchmark.py --record")
+        print("Incomplete corpus. Run first:  python tools/benchmark.py --record")
         sys.exit(1)
-    print(f"Corpus : {len(corpus)} échantillons prêts. Backend « {args.backend} ».")
+    print(f"Corpus: {len(corpus)} samples ready. Backend « {args.backend} ».")
 
     try:
         res = run_backend(args.backend, corpus, args.model, args.compute,
-                          args.repeats, args.insert)
+                          args.repeats, args.insert, args.threads, args.beam)
     except NotImplementedError as e:
-        print(f"\n{e}\n(À implémenter en vague 2 — voir le TODO dans run_backend.)")
+        print(f"\n{e}\n(To be implemented in wave 2 — see the TODO in run_backend.)")
         sys.exit(2)
     except KeyboardInterrupt:
-        print("\n\n⚠️  Interrompu. Le modèle n'a peut-être pas fini de se télécharger.")
-        print("   Relancez  python tools/benchmark.py --run  et laissez la barre finir.")
+        print("\n\n⚠️  Interrupted. The model may not have finished downloading.")
+        print("   Rerun  python tools/benchmark.py --run  and let the bar finish.")
         sys.exit(130)
     except Exception as e:
         import traceback
-        print("\n\n❌  Le benchmark a échoué :", e)
-        print("--- détails ---")
+        print("\n\n❌  The benchmark failed:", e)
+        print("--- details ---")
         traceback.print_exc()
-        print("\n↳ Copie-colle ces dernières lignes, je corrige.")
+        print("\n↳ Copy-paste these last lines and I'll fix it.")
         sys.exit(3)
     report(res)
 

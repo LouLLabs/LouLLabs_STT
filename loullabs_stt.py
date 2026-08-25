@@ -1,18 +1,23 @@
 """
 LouLLabs STT — Speech to Text
-Maintenez la touche (F8 par defaut) -> Parlez -> Relachez -> Texte colle
-100% local . Whisper . Francais (configurable)
+Hold the key (F8 by default) -> Speak -> Release -> Text is pasted
+100% local . Whisper . English (configurable)
 
-Version 1.0 (publique)
-  - Input 100% Win32 natif : aucun hook clavier global (pas de keylogger,
-    pas d'alerte antivirus, aucun droit administrateur requis).
-    Push-to-talk via GetAsyncKeyState (lecture de l'etat d'UNE seule touche).
-    Collage via SendInput.
-  - Memoire efficiente : le modele n'est charge qu'a la demande et se
-    decharge automatiquement apres inactivite -> ~0 Mo de RAM au repos.
-    Prechargement pendant que vous parlez pour masquer la latence.
-  - Reglages via clic droit sur l'icone de la barre des taches (config.json).
-  - Interface "liquid glass" dans la direction artistique LouLLabs.
+Version 1.5 (public)
+  - Any push-to-talk key: pick a preset or "Detect a key" to capture any key.
+  - Default transcription language: English (configurable).
+  - Default model: "small" (best speed/quality trade-off on CPU,
+    ~1 s of perceived latency for short dictation); "large-v3-turbo" is still
+    available in "Accurate" mode. Transcription across ALL CPU cores.
+  - 100% native Win32 input: no global keyboard hook (no keylogger,
+    no antivirus warning, no administrator rights required).
+    Push-to-talk via GetAsyncKeyState (reads the state of a SINGLE key).
+    Pasting via SendInput.
+  - Memory efficient: the model is loaded only on demand and is
+    unloaded automatically after inactivity -> ~0 MB of RAM at rest.
+    Preloaded while you speak to hide the latency.
+  - Settings via right-click on the taskbar icon (config.json).
+  - "Liquid glass" interface in the LouLLabs art direction.
 """
 
 import sys
@@ -25,20 +30,20 @@ import platform
 import threading
 import multiprocessing
 
-# ── CRITIQUE pour PyInstaller : empeche le fork-bomb sur Windows ──
-# (CTranslate2 / ONNXRuntime relancent des sous-processus ; sans cet appel
-#  place avant tout, le .exe --noconsole se re-spawn a l'infini.)
+# ── CRITICAL for PyInstaller: prevents the fork-bomb on Windows ──
+# (CTranslate2 / ONNXRuntime relaunch subprocesses; without this call
+#  placed before everything else, the --noconsole .exe re-spawns forever.)
 multiprocessing.freeze_support()
 
-# ── Windows uniquement ──────────────────────────────────────────
+# ── Windows only ────────────────────────────────────────────────
 if platform.system() != "Windows":
-    print("Ce programme est concu pour Windows uniquement.")
+    print("This program is designed for Windows only.")
     sys.exit(1)
 
 import ctypes
 from ctypes import wintypes
 
-# ── Imports applicatifs ─────────────────────────────────────────
+# ── Application imports ─────────────────────────────────────────
 try:
     import numpy as np
     import sounddevice as sd
@@ -52,27 +57,27 @@ try:
     from PySide6.QtCore import Qt, QTimer, Signal, QObject, QRectF, QPointF
     from PySide6.QtGui import (
         QPainter, QColor, QLinearGradient, QRadialGradient, QPen, QBrush,
-        QFont, QPainterPath, QPixmap, QIcon, QImage,
+        QFont, QPainterPath, QPixmap, QIcon, QImage, QKeySequence,
     )
 except ImportError as e:
-    print(f"Dependance manquante : {e}")
-    print("Lancez : pip install -r requirements.txt")
+    print(f"Missing dependency: {e}")
+    print("Run: pip install -r requirements.txt")
     try:
-        input("Appuyez sur Entree pour quitter...")
+        input("Press Enter to quit...")
     except EOFError:
         pass
     sys.exit(1)
 
 
 APP_NAME = "LouLLabs_STT"
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 
 # ═══════════════════════════════════════════════════════════════
-#  CHEMINS / RESSOURCES
+#  PATHS / RESOURCES
 # ═══════════════════════════════════════════════════════════════
 
 def resource_path(rel: str) -> str:
-    """Chemin d'une ressource embarquee (compatible PyInstaller --onedir)."""
+    """Path to an embedded resource (compatible with PyInstaller --onedir)."""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel)
 
@@ -86,29 +91,32 @@ CONFIG_PATH = os.path.join(config_dir(), "config.json")
 
 
 # ═══════════════════════════════════════════════════════════════
-#  CONFIGURATION (persistante)
+#  CONFIGURATION (persistent)
 # ═══════════════════════════════════════════════════════════════
 
 DEFAULT_CONFIG = {
-    "hotkey": "f8",              # touche push-to-talk (voir KEY_VK)
-    "language": "fr",           # code langue Whisper ("" = auto-detection)
-    "model": "large-v3-turbo",  # taille du modele
-    "compute_type": "int8",     # quantification (int8 = leger et rapide)
-    "beam_size": 3,             # 1 = rapide, 5 = qualite max
-    "min_duration": 0.3,        # ignore les appuis < 300 ms
-    "mic_device": None,         # index du micro (None = peripherique par defaut)
-    "mode": "auto",             # "auto" | "performance" | "eco" (gestion des ressources)
-    "idle_unload_minutes": 3,   # (mode auto, avance) delai de dechargement si defini
+    "hotkey": "f8",              # push-to-talk key name (see KEY_VK)
+    "hotkey_vk": None,           # custom key: raw Win32 virtual-key code (overrides "hotkey" when set)
+    "hotkey_label": "",          # custom key: display label (e.g. "A", "SPACE")
+    "language": "en",            # Whisper language code ("" = auto-detect)
+    "model": "small",           # model size (small = best speed/quality trade-off on CPU)
+    "compute_type": "int8",     # quantization (int8 = light and fast)
+    "beam_size": 3,             # 1 = fast, 5 = max quality
+    "min_duration": 0.3,        # ignore presses < 300 ms
+    "mic_device": None,         # microphone index (None = default device)
+    "mode": "auto",             # "auto" | "performance" | "eco" (resource management)
+    "idle_unload_minutes": 3,   # (auto mode, advanced) unload delay if set
     "start_with_windows": False,
-    "insert_method": "frappe",  # "frappe" = saisie directe (fiable, sans presse-papier)
-                                # "collage" = presse-papier + Ctrl+V
-    "restore_clipboard": True,  # (mode collage) restaure le presse-papier apres coup
-    "first_run_done": False,    # ecran de bienvenue affiche une seule fois
-    "silence_rms": 0.006,       # seuil de silence, calibre automatiquement sur le micro
+    "insert_method": "frappe",  # "frappe" = direct typing (reliable, no clipboard)
+                                # "collage" = clipboard + Ctrl+V
+    "restore_clipboard": True,  # (clipboard mode) restore the clipboard afterwards
+    "first_run_done": False,    # welcome screen shown only once
+    "silence_rms": 0.006,       # silence threshold, calibrated automatically for the mic
+    "initial_prompt": "",       # optional vocabulary hint for proper nouns (e.g. "Acme, Jane Doe."); "" = off
 }
 
-# Touches proposees pour le push-to-talk -> code virtuel Win32.
-# (uniquement des touches "seules", faciles a maintenir enfoncees)
+# Keys offered for push-to-talk -> Win32 virtual-key code.
+# (only "standalone" keys that are easy to hold down)
 KEY_VK = {
     "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74, "f6": 0x75,
     "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f12": 0x7B,
@@ -116,43 +124,67 @@ KEY_VK = {
     "ctrl_droit": 0xA3, "menu": 0x5D,
 }
 
+# English display labels for the preset keys (config values stay the KEY_VK keys).
+KEY_VK_LABELS = {
+    "pause": "Pause", "scroll_lock": "Scroll Lock", "inser": "Insert",
+    "ctrl_droit": "Right Ctrl", "menu": "Menu",
+}
+
+def key_display(name: str) -> str:
+    return KEY_VK_LABELS.get(name, name.upper().replace("_", " "))
+
+def resolve_hotkey_vk(cfg) -> int:
+    """Virtual-key code of the push-to-talk key.
+    A custom captured key ("hotkey_vk") wins over the named preset ("hotkey")."""
+    vk = cfg.get("hotkey_vk")
+    if isinstance(vk, int) and vk > 0:
+        return vk
+    return KEY_VK.get(cfg.get("hotkey", "f8"), 0x77)
+
+def resolve_hotkey_label(cfg) -> str:
+    """Human-readable label shown in the overlay / tray."""
+    lbl = cfg.get("hotkey_label")
+    if lbl:
+        return lbl
+    return key_display(cfg.get("hotkey", "f8"))
+
 MODEL_CHOICES = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
-# Seuls 3 modeles sont exposes, avec des libelles PRODUIT (pas techniques).
-# Le jour ou le moteur change, l'UX ne bouge pas. (id, libelle, note)
+# Only 3 models are exposed, with PRODUCT labels (not technical ones).
+# The day the engine changes, the UX stays the same. (id, label, note)
 RECOMMENDED_MODELS = [
-    ("large-v3-turbo", "Precis",    "recommande"),
-    ("small",          "Equilibre", "plus leger"),
-    ("base",           "Rapide",    "tres leger"),
+    ("base",           "Fast",     "very light"),
+    ("small",          "Balanced", "recommended"),
+    ("large-v3-turbo", "Accurate", "max quality"),
 ]
 COMPUTE_CHOICES = ["int8", "int8_float16", "float16", "float32"]
 LANG_CHOICES = [
-    ("Francais", "fr"), ("Anglais", "en"), ("Espagnol", "es"),
-    ("Allemand", "de"), ("Italien", "it"), ("Detection auto", ""),
+    ("French", "fr"), ("English", "en"), ("Spanish", "es"),
+    ("German", "de"), ("Italian", "it"), ("Auto-detect", ""),
 ]
 
-# Modes de gestion des ressources (l'utilisateur ne voit jamais la technique)
+# Resource-management modes (the user never sees the technical detail)
 MODE_CHOICES = [
-    ("Automatique", "auto"),
+    ("Automatic", "auto"),
     ("Performance", "performance"),
-    ("Economie", "eco"),
+    ("Economy", "eco"),
 ]
 
-# ── Garde-fou anti-hallucination ────────────────────────────────
-# Whisper "invente" parfois du texte sur un silence (appui accidentel).
-# Ces phrases, tres frequentes, ne sont jamais dictees volontairement.
+# ── Anti-hallucination safeguard ────────────────────────────────
+# Whisper sometimes "invents" text on silence (an accidental press).
+# These phrases, very common, are never dictated on purpose.
 import re as _re
 import unicodedata as _ud
 
 def _normalize(s: str) -> str:
     s = _ud.normalize("NFD", s.lower())
-    s = "".join(c for c in s if _ud.category(c) != "Mn")   # retire les accents
+    s = "".join(c for c in s if _ud.category(c) != "Mn")   # strip accents
     return _re.sub(r"\s+", " ", _re.sub(r"[^0-9a-z]+", " ", s)).strip()
 
-# Principe : faux positif > faux negatif. On prefere laisser passer une
-# hallucination rare plutot que de "manger" une vraie phrase. Donc la blacklist
-# ne contient QUE des phrases multi-mots jamais dictees volontairement ; les mots
-# courts frequents ("merci", "oui", "ok"...) NE sont PAS ici (un utilisateur peut
-# les dicter) — ils sont geres par la confiance du modele (no_speech / logprob).
+# Principle: false positive > false negative. We prefer to let a rare
+# hallucination through rather than "eat" a real sentence. So the blocklist
+# contains ONLY multi-word phrases never dictated on purpose; frequent short
+# words ("thanks", "yes", "ok"...) are NOT here (a user may dictate them)
+# — they are handled by the model's confidence (no_speech / logprob).
 HALLUCINATION_BLOCKLIST = {_normalize(x) for x in [
     "Sous-titres realises par la communaute d'Amara.org",
     "Sous-titres realises para la communaute d'Amara.org",
@@ -165,16 +197,16 @@ HALLUCINATION_BLOCKLIST = {_normalize(x) for x in [
     "Thanks for watching this video",
     "Please subscribe to my channel",
 ]}
-SILENCE_RMS = 0.006     # sous ce seuil : quasi-silence (valide sur enregistrements reels :
-                        # parole >= 0.015, silence ~ 0.0001)
+SILENCE_RMS = 0.006     # below this threshold: near-silence (validated on real recordings:
+                        # speech >= 0.015, silence ~ 0.0001)
 
-# Palette LouLLabs
+# LouLLabs palette
 VIOLET = QColor(139, 92, 246)
 VIOLET2 = QColor(168, 85, 247)
 ROSE = QColor(236, 72, 153)
 INK = QColor(17, 17, 17)
-ROUGE = QColor(255, 45, 55)     # rouge vif (etat enregistrement)
-OVERLAY_RADIUS = 30             # arrondi des coins de l'overlay
+ROUGE = QColor(255, 45, 55)     # bright red (recording state)
+OVERLAY_RADIUS = 30             # corner radius of the overlay
 
 
 def load_config() -> dict:
@@ -185,12 +217,12 @@ def load_config() -> dict:
     except FileNotFoundError:
         pass
     except Exception as e:
-        print(f"  Config illisible ({e}), valeurs par defaut utilisees.")
-    # garde-fous
+        print(f"  Config unreadable ({e}), using default values.")
+    # safeguards
     if cfg["hotkey"] not in KEY_VK:
         cfg["hotkey"] = "f8"
     if cfg["model"] not in MODEL_CHOICES:
-        cfg["model"] = "large-v3-turbo"
+        cfg["model"] = "small"
     if cfg["compute_type"] not in COMPUTE_CHOICES:
         cfg["compute_type"] = "int8"
     return cfg
@@ -201,18 +233,18 @@ def save_config(cfg: dict):
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        print(f"  Impossible d'enregistrer la config : {e}")
+        print(f"  Unable to save the config: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════
-#  DEMARRAGE AVEC WINDOWS (cle de registre Run, sans droits admin)
+#  START WITH WINDOWS (Run registry key, no admin rights)
 # ═══════════════════════════════════════════════════════════════
 
 def _run_command() -> str:
-    """Commande a lancer au demarrage de session."""
+    """Command to launch at session startup."""
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}"'
-    # mode script : pythonw.exe pour ne pas ouvrir de console
+    # script mode: pythonw.exe so no console window opens
     pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     exe = pyw if os.path.exists(pyw) else sys.executable
     return f'"{exe}" "{os.path.abspath(__file__)}"'
@@ -235,16 +267,16 @@ def set_start_with_windows(enabled: bool) -> bool:
         winreg.CloseKey(key)
         return True
     except Exception as e:
-        print(f"  Demarrage Windows : {e}")
+        print(f"  Start with Windows: {e}")
         return False
 
 
 # ═══════════════════════════════════════════════════════════════
-#  DETECTION MATERIEL (natif, zero dependance) — pour le diagnostic
+#  HARDWARE DETECTION (native, zero dependencies) — for diagnostics
 # ═══════════════════════════════════════════════════════════════
 
 def detect_ram_gb():
-    """(total_Go, dispo_Go) via GlobalMemoryStatusEx, sinon (None, None)."""
+    """(total_GB, available_GB) via GlobalMemoryStatusEx, otherwise (None, None)."""
     try:
         class MEMORYSTATUSEX(ctypes.Structure):
             _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
@@ -260,7 +292,7 @@ def detect_ram_gb():
 
 
 def detect_gpu():
-    """Nom du GPU via EnumDisplayDevices (aucun subprocess), sinon None."""
+    """GPU name via EnumDisplayDevices (no subprocess), otherwise None."""
     try:
         class DISPLAY_DEVICE(ctypes.Structure):
             _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
@@ -275,7 +307,7 @@ def detect_gpu():
             if s and s not in names:
                 names.append(s)
             i += 1
-        for n in names:   # privilegie un GPU nomme
+        for n in names:   # prefer a named GPU
             if any(k in n for k in ("Radeon", "NVIDIA", "GeForce", "RTX", "Arc", "Intel")):
                 return n
         return names[0] if names else None
@@ -284,7 +316,7 @@ def detect_gpu():
 
 
 def detect_mic():
-    """Nom du micro par defaut, sinon None."""
+    """Name of the default microphone, otherwise None."""
     try:
         return sd.query_devices(kind="input").get("name")
     except Exception:
@@ -292,15 +324,15 @@ def detect_mic():
 
 
 def calibrate_mic(device=None, seconds=1.2):
-    """Mesure ROBUSTE du bruit de fond -> seuil de silence adapte au micro.
+    """ROBUST measurement of background noise -> silence threshold adapted to the mic.
 
-    On decoupe l'echantillon en fenetres de 100 ms et on prend la MEDIANE des
-    RMS : un bruit ponctuel (clic souris, touche, souffle) n'affecte que
-    quelques fenetres et ne fausse donc pas l'estimation. Le seuil ne descend
-    jamais sous 0.006 (valide sur enregistrements reels) et est plafonne a 0.02.
-    Rappel : le RMS ne peut, A LUI SEUL, supprimer une vraie phrase — il est
-    toujours combine a la confiance du modele (no_speech / logprob).
-    Retourne (seuil, bruit_rms) ou None.
+    We split the sample into 100 ms windows and take the MEDIAN of the
+    RMS values: a one-off noise (mouse click, keypress, breath) only affects
+    a few windows and therefore does not skew the estimate. The threshold never
+    drops below 0.006 (validated on real recordings) and is capped at 0.02.
+    Reminder: RMS cannot, ON ITS OWN, suppress a real sentence — it is
+    always combined with the model's confidence (no_speech / logprob).
+    Returns (threshold, noise_rms) or None.
     """
     try:
         rec = sd.rec(int(seconds * 16000), samplerate=16000, channels=1,
@@ -314,22 +346,22 @@ def calibrate_mic(device=None, seconds=1.2):
         threshold = min(0.02, max(0.006, noise * 8.0))
         return round(threshold, 4), round(noise, 5)
     except Exception as e:
-        print(f"  Calibration micro impossible : {e}")
+        print(f"  Mic calibration failed: {e}")
         return None
 
 
 # ═══════════════════════════════════════════════════════════════
-#  INPUT WIN32 NATIF (aucun hook global, aucun droit admin)
+#  NATIVE WIN32 INPUT (no global hook, no admin rights)
 # ═══════════════════════════════════════════════════════════════
 
 _user32 = ctypes.windll.user32
 
 def key_is_down(vk: int) -> bool:
-    """True si la touche est physiquement enfoncee (bit de poids fort)."""
+    """True if the key is physically pressed (high-order bit)."""
     return bool(_user32.GetAsyncKeyState(vk) & 0x8000)
 
-# --- SendInput : structures ---
-ULONG_PTR = wintypes.WPARAM  # taille pointeur (UINT_PTR)
+# --- SendInput: structures ---
+ULONG_PTR = wintypes.WPARAM  # pointer size (UINT_PTR)
 
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [
@@ -354,7 +386,7 @@ VK_CONTROL = 0x11
 VK_V = 0x56
 MAPVK_VK_TO_VSC = 0
 
-# Signatures explicites (evite toute troncature de pointeur en 64 bits)
+# Explicit signatures (avoids any pointer truncation on 64-bit)
 try:
     _user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
     _user32.SendInput.restype = wintypes.UINT
@@ -370,22 +402,22 @@ def _send(events):
 
 
 def _kb_vk(vk: int, up: bool) -> INPUT:
-    """Evenement touche par code virtuel + scancode (compatibilite maximale)."""
+    """Key event by virtual-key code + scancode (maximum compatibility)."""
     scan = _user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
     flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if up else 0)
     return INPUT(INPUT_KEYBOARD, _INPUTunion(KEYBDINPUT(vk, scan, flags, 0, 0)))
 
 
 def _kb_unicode(code_unit: int, up: bool) -> INPUT:
-    """Evenement de saisie d'un caractere Unicode (UTF-16)."""
+    """Input event for a Unicode character (UTF-16)."""
     flags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if up else 0)
     return INPUT(INPUT_KEYBOARD, _INPUTunion(KEYBDINPUT(0, code_unit, flags, 0, 0)))
 
 
 def type_unicode(text: str) -> bool:
-    """Tape le texte directement dans la fenetre active (aucun presse-papier).
-    Methode la plus fiable : fonctionne dans les champs texte, navigateurs,
-    messageries, editeurs, boites de dialogue, quelle que soit la disposition."""
+    """Types the text directly into the active window (no clipboard).
+    The most reliable method: works in text fields, browsers,
+    messaging apps, editors, dialog boxes, whatever the keyboard layout."""
     try:
         data = text.encode("utf-16-le")
         import struct
@@ -396,19 +428,19 @@ def type_unicode(text: str) -> bool:
             events.append(_kb_unicode(cu, True))
         if not events:
             return True
-        # Envoi par lots pour rester sous les limites de la file d'entree
+        # Send in batches to stay under the input queue limits
         BATCH = 400
         sent = 0
         for i in range(0, len(events), BATCH):
             sent += _send(events[i:i + BATCH])
         return sent > 0
     except Exception as e:
-        print(f"  Saisie Unicode impossible : {e}")
+        print(f"  Unicode typing failed: {e}")
         return False
 
 
 def send_ctrl_v() -> bool:
-    """Envoie Ctrl+V (methode presse-papier). Verifie le succes, fallback keybd_event."""
+    """Sends Ctrl+V (clipboard method). Checks success, falls back to keybd_event."""
     try:
         n = _send([_kb_vk(VK_CONTROL, False), _kb_vk(VK_V, False),
                    _kb_vk(VK_V, True), _kb_vk(VK_CONTROL, True)])
@@ -416,19 +448,19 @@ def send_ctrl_v() -> bool:
             return True
     except Exception:
         pass
-    try:  # fallback API historique
+    try:  # fallback to legacy API
         _user32.keybd_event(VK_CONTROL, 0, 0, 0)
         _user32.keybd_event(VK_V, 0, 0, 0)
         _user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
         _user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
         return True
     except Exception as e:
-        print(f"  Collage impossible : {e}")
+        print(f"  Paste failed: {e}")
         return False
 
 
 # ═══════════════════════════════════════════════════════════════
-#  ICONE (chargee depuis assets, fallback dessine)
+#  ICON (loaded from assets, drawn fallback)
 # ═══════════════════════════════════════════════════════════════
 
 def app_icon() -> QIcon:
@@ -441,7 +473,7 @@ def app_icon() -> QIcon:
     return QIcon(_fallback_pixmap())
 
 def _fallback_pixmap() -> QPixmap:
-    """Icone micro violet->rose dessinee (si l'asset est absent)."""
+    """Drawn violet->pink mic icon (when the asset is missing)."""
     size = 64
     img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
     img.fill(Qt.transparent)
@@ -466,7 +498,7 @@ def _fallback_pixmap() -> QPixmap:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SIGNAUX THREAD-SAFE
+#  THREAD-SAFE SIGNALS
 # ═══════════════════════════════════════════════════════════════
 
 class Signals(QObject):
@@ -514,7 +546,7 @@ class GlassOverlay(QWidget):
         self._target_opacity = 0.0
         self._bar_heights = [0.0] * 24
 
-        # Mascotte LouLLabs (affichee dans l'etat "pret")
+        # LouLLabs mascot (shown in the "ready" state)
         self._mascot = QPixmap()
         mp = resource_path("assets/mascot_head.png")
         if os.path.exists(mp):
@@ -541,10 +573,10 @@ class GlassOverlay(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Pas de flou acrylique Windows : il peint un rectangle OPAQUE carre
-        # derriere la fenetre (le "carre" visible aux angles). On s'en passe :
-        # le rendu translucide (WA_TranslucentBackground) donne des coins
-        # arrondis parfaitement nets et un fond reellement transparent.
+        # No Windows acrylic blur: it paints a square OPAQUE rectangle
+        # behind the window (the visible "square" at the corners). We skip it:
+        # translucent rendering (WA_TranslucentBackground) gives perfectly
+        # crisp rounded corners and a truly transparent background.
         self.clearMask()
 
     # ─── Slots ──────────────────────────────────────────────────
@@ -596,7 +628,7 @@ class GlassOverlay(QWidget):
                 self._bar_heights[i] += (self._smooth_level * wave - self._bar_heights[i]) * 0.25
         self.update()
 
-    # ─── Rendu ──────────────────────────────────────────────────
+    # ─── Rendering ──────────────────────────────────────────────
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -617,10 +649,13 @@ class GlassOverlay(QWidget):
         path = QPainterPath()
         radius = OVERLAY_RADIUS
         path.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
+        # Dark base so the overlay stays readable on ANY background (incl. white),
+        # while keeping a slightly translucent "glass" feel.
+        p.fillPath(path, QColor(22, 20, 30, 205))
         bg = QLinearGradient(0, 0, w, h)
-        bg.setColorAt(0.0, QColor(139, 92, 246, 40))   # plus transparent
-        bg.setColorAt(0.5, QColor(168, 85, 247, 30))
-        bg.setColorAt(1.0, QColor(236, 72, 153, 36))
+        bg.setColorAt(0.0, QColor(139, 92, 246, 70))   # violet tint over the dark base
+        bg.setColorAt(0.5, QColor(168, 85, 247, 55))
+        bg.setColorAt(1.0, QColor(236, 72, 153, 65))
         p.fillPath(path, QBrush(bg))
         inner = QPainterPath()
         inner.addRoundedRect(QRectF(1, 1, w - 2, h - 2), radius - 1, radius - 1)
@@ -652,10 +687,10 @@ class GlassOverlay(QWidget):
         return QFont("Space Grotesk", 8)
 
     def _draw_recording(self, p, w, h):
-        blink = abs(math.sin(self._frame * 0.16))   # clignotement du point rouge
+        blink = abs(math.sin(self._frame * 0.16))   # blinking of the red dot
         text_x = 50
 
-        # ── Mascotte + point rouge clignotant sur la tete ──
+        # ── Mascot + blinking red dot on the head ──
         if not self._mascot.isNull():
             mw, mh = self._mascot.width(), self._mascot.height()
             mx, my = 14, (h - mh) / 2
@@ -679,19 +714,19 @@ class GlassOverlay(QWidget):
             p.drawEllipse(QPointF(cx, cy), 6, 6)
             text_x = 50
 
-        # ── Texte rouge vif ──
+        # ── Bright red text ──
         f = QFont("Space Grotesk", 12); f.setWeight(QFont.Bold)
         p.setPen(QColor(255, 66, 76)); p.setFont(f)
-        p.drawText(text_x, h // 2 - 5, "Enregistrement")
+        p.drawText(text_x, h // 2 - 5, "Recording")
 
-        # ── Badge touche (haut droite) ──
+        # ── Key badge (top right) ──
         bx, by = w - 48, 12
         bp = QPainterPath(); bp.addRoundedRect(QRectF(bx, by, 34, 20), 6, 6)
         p.setPen(Qt.NoPen); p.fillPath(bp, QColor(255, 255, 255, 22))
         p.setPen(QColor(255, 255, 255, 150)); p.setFont(self._small_font())
         p.drawText(QRectF(bx, by, 34, 20), Qt.AlignCenter, self.hotkey_label)
 
-        # ── Ondes rouges (sous le texte, a droite de la mascotte) ──
+        # ── Red waveform (below the text, to the right of the mascot) ──
         bar_y, bar_w, gap = h - 22, 3.5, 3
         start_x, max_x = text_x, w - 16
         n = min(24, int((max_x - start_x) / (bar_w + gap)))
@@ -716,7 +751,7 @@ class GlassOverlay(QWidget):
         mid_y = h // 2
         self._spinner(p, 30, mid_y - 2)
         p.setPen(QColor(255, 255, 255, 210)); p.setFont(QFont("Space Grotesk", 11))
-        p.drawText(52, mid_y + 2, "Transcription en cours...")
+        p.drawText(52, mid_y + 2, "Transcribing...")
         dots = (self._frame // 10) % 4
         for i in range(3):
             p.setPen(Qt.NoPen)
@@ -726,9 +761,9 @@ class GlassOverlay(QWidget):
     def _draw_loading(self, p, w, h):
         self._spinner(p, 30, h // 2 - 8)
         p.setPen(QColor(255, 255, 255, 225)); p.setFont(self._title_font())
-        p.drawText(52, h // 2 - 6, "Preparation du modele")
+        p.drawText(52, h // 2 - 6, "Preparing the model")
         p.setPen(QColor(255, 255, 255, 140)); p.setFont(self._small_font())
-        p.drawText(52, h // 2 + 14, self._loading_text or "Un instant...")
+        p.drawText(52, h // 2 + 14, self._loading_text or "One moment...")
 
     def _draw_ready(self, p, w, h):
         mid_y = h // 2
@@ -736,7 +771,7 @@ class GlassOverlay(QWidget):
         if not self._mascot.isNull():
             mw, mh = self._mascot.width(), self._mascot.height()
             mx, my = 16, (h - mh) / 2
-            # halo doux derriere la mascotte
+            # soft halo behind the mascot
             gg = QRadialGradient(mx + mw / 2, mid_y, mw * 0.8)
             gg.setColorAt(0.0, QColor(168, 85, 247, 70)); gg.setColorAt(1.0, QColor(168, 85, 247, 0))
             p.setPen(Qt.NoPen); p.setBrush(QBrush(gg))
@@ -752,9 +787,9 @@ class GlassOverlay(QWidget):
             p.drawLine(QPointF(cx, cy - 4), QPointF(cx, cy + 2))
             p.drawLine(QPointF(cx - 3, cy + 3.5), QPointF(cx + 3, cy + 3.5))
         p.setPen(QColor(255, 255, 255, 235)); p.setFont(self._title_font())
-        p.drawText(text_x, mid_y - 1, "LouLLabs STT — pret")
+        p.drawText(text_x, mid_y - 1, "LouLLabs STT — ready")
         p.setPen(QColor(255, 255, 255, 140)); p.setFont(self._small_font())
-        p.drawText(text_x, mid_y + 16, "Maintenez " + self.hotkey_label + " pour parler")
+        p.drawText(text_x, mid_y + 16, "Hold " + self.hotkey_label + " to speak")
 
     def _draw_success(self, p, w, h):
         mid_y = h // 2
@@ -767,7 +802,7 @@ class GlassOverlay(QWidget):
         p.drawLine(QPointF(cx - 4, cy), QPointF(cx - 1, cy + 3.5))
         p.drawLine(QPointF(cx - 1, cy + 3.5), QPointF(cx + 4.5, cy - 3))
         p.setPen(QColor(34, 197, 94)); p.setFont(self._title_font())
-        p.drawText(52, mid_y + 1, "Texte colle !")
+        p.drawText(52, mid_y + 1, "Text pasted!")
         p.setPen(QColor(255, 255, 255, 120)); p.setFont(self._small_font())
         p.drawText(52, mid_y + 18, self._success_text)
 
@@ -782,17 +817,17 @@ class GlassOverlay(QWidget):
         p.drawLine(QPointF(cx - 3.5, cy - 3.5), QPointF(cx + 3.5, cy + 3.5))
         p.drawLine(QPointF(cx + 3.5, cy - 3.5), QPointF(cx - 3.5, cy + 3.5))
         p.setPen(QColor(255, 120, 120)); p.setFont(self._title_font())
-        p.drawText(52, mid_y - 2, "Probleme")
+        p.drawText(52, mid_y - 2, "Problem")
         p.setPen(QColor(255, 255, 255, 150)); p.setFont(self._small_font())
         p.drawText(QRectF(52, mid_y + 4, w - 64, 30), Qt.TextWordWrap, self._error_text)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  DETECTION CACHE MODELE (pour l'ecran de telechargement)
+#  MODEL CACHE DETECTION (for the download screen)
 # ═══════════════════════════════════════════════════════════════
 
 def model_is_cached(model_name: str) -> bool:
-    """Heuristique : le modele existe-t-il deja dans le cache HuggingFace ?"""
+    """Heuristic: does the model already exist in the HuggingFace cache?"""
     token = model_name.replace("large-v3-turbo", "turbo").split("-")[0]
     roots = [
         os.environ.get("HF_HOME"),
@@ -809,7 +844,7 @@ def model_is_cached(model_name: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  MOTEUR DE DICTEE (chargement paresseux + dechargement auto)
+#  DICTATION ENGINE (lazy loading + auto unload)
 # ═══════════════════════════════════════════════════════════════
 
 class STTEngine:
@@ -824,22 +859,22 @@ class STTEngine:
         self._load_lock = threading.Lock()
         self._loading = False
         self._model_ready = threading.Event()
-        self._loaded_signature = None      # (model, compute_type) charge
+        self._loaded_signature = None      # (model, compute_type) loaded
         self._record_start = 0.0
         self._last_activity = time.time()
 
-    # ─── Gestion du modele ──────────────────────────────────────
+    # ─── Model management ───────────────────────────────────────
     def _signature(self):
         return (self.cfg["model"], self.cfg["compute_type"])
 
     def request_model(self):
-        """Declenche le chargement du modele en tache de fond si necessaire."""
+        """Triggers loading the model in the background if needed."""
         with self._load_lock:
             if self.model is not None and self._loaded_signature == self._signature():
                 self._model_ready.set()
                 return
             if self.model is not None and self._loaded_signature != self._signature():
-                # config changee -> on decharge l'ancien
+                # config changed -> unload the old one
                 self.model = None
                 self._model_ready.clear()
             if self._loading:
@@ -852,11 +887,14 @@ class STTEngine:
         sig = self._signature()
         try:
             if not model_is_cached(sig[0]):
+                hint = {"tiny": "75 MB", "base": "140 MB", "small": "460 MB",
+                        "medium": "1.5 GB", "large-v3-turbo": "1.6 GB",
+                        "large-v3": "3 GB"}.get(sig[0], "several hundred MB")
                 self.overlay.signals.show_loading.emit(
-                    "Telechargement (~1.5 Go), 1re fois seulement")
+                    f"Downloading the model (~{hint}), first time only")
             model = WhisperModel(
                 sig[0], device="cpu", compute_type=sig[1],
-                cpu_threads=max(1, (os.cpu_count() or 2) // 2),
+                cpu_threads=max(1, os.cpu_count() or 4),   # all cores: push-to-talk burst
                 num_workers=1,
             )
             with self._load_lock:
@@ -864,26 +902,26 @@ class STTEngine:
                 self._loaded_signature = sig
                 self._loading = False
             self._model_ready.set()
-            print(f"  Modele '{sig[0]}' ({sig[1]}) charge.")
+            print(f"  Model '{sig[0]}' ({sig[1]}) loaded.")
         except Exception as e:
             with self._load_lock:
                 self._loading = False
-            self._model_ready.set()  # debloque les threads en attente
-            print(f"  Erreur de chargement du modele : {e}")
-            self.overlay.signals.show_error.emit("Chargement du modele impossible")
+            self._model_ready.set()  # unblock waiting threads
+            print(f"  Model loading error: {e}")
+            self.overlay.signals.show_error.emit("Unable to load the model")
 
     def _idle_minutes(self) -> int:
-        """Delai de dechargement selon le mode (0 = jamais)."""
+        """Unload delay depending on the mode (0 = never)."""
         m = self.cfg.get("mode", "auto")
         if m == "performance":
-            return 0            # modele garde en memoire
+            return 0            # model kept in memory
         if m == "eco":
-            return 2            # libere vite les ressources
-        adv = self.cfg.get("idle_unload_minutes")   # override avance (mode auto)
+            return 2            # releases resources quickly
+        adv = self.cfg.get("idle_unload_minutes")   # advanced override (auto mode)
         return adv if isinstance(adv, int) and adv > 0 else 4
 
     def unload_model_if_idle(self):
-        """Appele periodiquement : libere la RAM apres inactivite."""
+        """Called periodically: releases RAM after inactivity."""
         minutes = self._idle_minutes()
         if not minutes or self.recording or self.model is None:
             return
@@ -895,7 +933,7 @@ class STTEngine:
                 self._loaded_signature = None
                 self._model_ready.clear()
             import gc; gc.collect()
-            print("  Modele decharge (inactivite) -> RAM liberee.")
+            print("  Model unloaded (inactivity) -> RAM released.")
 
     def touch(self):
         self._last_activity = time.time()
@@ -909,7 +947,7 @@ class STTEngine:
         self.touch()
         self.audio_chunks = []
         self._record_start = time.time()
-        # Precharge le modele PENDANT que l'utilisateur parle (latence masquee)
+        # Preload the model WHILE the user is speaking (latency hidden)
         self.request_model()
         try:
             self.stream = sd.InputStream(
@@ -921,9 +959,9 @@ class STTEngine:
         except Exception as e:
             with self._lock:
                 self.recording = False
-            print(f"  Erreur micro : {e}")
+            print(f"  Microphone error: {e}")
             self.overlay.signals.show_error.emit(
-                "Micro indisponible - verifiez votre peripherique")
+                "Microphone unavailable - check your device")
             return
         self.overlay.signals.show_recording.emit()
 
@@ -957,14 +995,14 @@ class STTEngine:
                 return
             audio = np.concatenate(self.audio_chunks, axis=0).flatten()
 
-            # Attendre le modele (charge en fond depuis l'appui sur la touche)
+            # Wait for the model (loaded in the background since the key press)
             if self.model is None or not self._model_ready.is_set():
-                self.overlay.signals.show_loading.emit("Chargement du modele...")
+                self.overlay.signals.show_loading.emit("Loading the model...")
                 self.request_model()
                 self._model_ready.wait(timeout=120)
             model = self.model
             if model is None:
-                self.overlay.signals.show_error.emit("Modele indisponible")
+                self.overlay.signals.show_error.emit("Model unavailable")
                 return
 
             self.overlay.signals.show_transcribing.emit()
@@ -973,12 +1011,13 @@ class STTEngine:
                 audio,
                 language=self.cfg.get("language") or None,
                 beam_size=self.cfg.get("beam_size", 3),
+                initial_prompt=self.cfg.get("initial_prompt") or None,
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=500),
                 without_timestamps=True,
                 no_speech_threshold=0.6,
             )
-            # Un seul passage : on recolte le texte ET les signaux de confiance
+            # A single pass: we collect the text AND the confidence signals
             parts, nsp, alp, cr = [], [], [], []
             for s in segments:
                 t = s.text.strip()
@@ -1001,86 +1040,86 @@ class STTEngine:
                 print(f"  [{elapsed:.1f}s] -> {text}")
                 self.overlay.signals.show_success.emit(text)
             else:
-                print(f"  Aucune parole exploitable ({elapsed:.1f}s)")
+                print(f"  No usable speech ({elapsed:.1f}s)")
                 self.overlay.signals.hide_overlay.emit()
         except Exception as e:
-            print(f"  Erreur de transcription : {e}")
-            self.overlay.signals.show_error.emit("Erreur de transcription")
+            print(f"  Transcription error: {e}")
+            self.overlay.signals.show_error.emit("Transcription error")
 
     def _should_suppress(self, text: str, audio, m: dict) -> bool:
-        """Filtre multi-signal des hallucinations de Whisper.
+        """Multi-signal filter for Whisper hallucinations.
 
-        Combine plusieurs indices plutot qu'une seule blacklist ou le seul
-        volume (RMS) : texte vide, phrase connue, repetition, et surtout la
-        CONFIANCE du modele (no_speech_prob / avg_logprob). Objectif : ne
-        jamais 'manger' une vraie phrase, meme dite doucement.
+        Combines several cues rather than a single blocklist or volume
+        (RMS) alone: empty text, known phrase, repetition, and above all the
+        model's CONFIDENCE (no_speech_prob / avg_logprob). Goal: never
+        'eat' a real sentence, even one spoken softly.
         """
         norm = _normalize(text)
         if not norm:
             return True
 
-        # 1) Filet : hallucinations textuelles connues (exactes)
+        # 1) Safety net: known textual hallucinations (exact)
         if norm in HALLUCINATION_BLOCKLIST:
-            print(f"  Hallucination connue ignoree : {text!r}")
+            print(f"  Known hallucination ignored: {text!r}")
             return True
 
-        # 2) Boucle de repetition / charabia (ratio de compression eleve)
+        # 2) Repetition loop / gibberish (high compression ratio)
         if m.get("compression", 1.0) > 2.5:
-            print(f"  Repetition suspecte (cr={m['compression']:.2f}) ignoree : {text!r}")
+            print(f"  Suspicious repetition (cr={m['compression']:.2f}) ignored: {text!r}")
             return True
 
         no_speech = m.get("no_speech", 0.0)
         logprob = m.get("avg_logprob", 0.0)
 
-        # 3) Le modele est tres confiant qu'il n'y a PAS de parole, et peu sur de lui
+        # 3) The model is very confident there is NO speech, and unsure of itself
         if no_speech > 0.85 and logprob < -1.0:
-            print(f"  Absence de parole (no_speech={no_speech:.2f}, lp={logprob:.2f}) : {text!r}")
+            print(f"  No speech (no_speech={no_speech:.2f}, lp={logprob:.2f}): {text!r}")
             return True
 
-        # 4) Quasi-silence UNIQUEMENT combine a une faible confiance du modele
-        #    (un 'oui' clair mais doux garde un bon logprob -> non filtre)
+        # 4) Near-silence ONLY combined with low model confidence
+        #    (a clear but soft 'yes' keeps a good logprob -> not filtered)
         try:
             rms = float(np.sqrt(np.mean(np.square(audio))))
         except Exception:
             rms = 1.0
         silence_rms = self.cfg.get("silence_rms", SILENCE_RMS)
         if rms < silence_rms and logprob < -0.8 and len(norm) < 40:
-            print(f"  Quasi-silence peu fiable (rms={rms:.4f}, lp={logprob:.2f}) : {text!r}")
+            print(f"  Unreliable near-silence (rms={rms:.4f}, lp={logprob:.2f}): {text!r}")
             return True
 
         return False
 
     def _paste(self, text: str):
-        """Insere le texte dans la fenetre active."""
+        """Inserts the text into the active window."""
         method = self.cfg.get("insert_method", "frappe")
 
-        # ── Methode par defaut : saisie directe (aucun presse-papier) ──
+        # ── Default method: direct typing (no clipboard) ──
         if method != "collage":
             if type_unicode(text):
                 return
-            print("  Saisie directe indisponible, bascule sur le presse-papier.")
+            print("  Direct typing unavailable, falling back to the clipboard.")
 
-        # ── Methode presse-papier + Ctrl+V (sauvegarde/restauration garantie) ──
+        # ── Clipboard + Ctrl+V method (guaranteed save/restore) ──
         restore = self.cfg.get("restore_clipboard", True)
         previous = None
         if restore:
             try:
-                previous = pyperclip.paste()   # contenu a preserver
+                previous = pyperclip.paste()   # content to preserve
             except Exception:
                 previous = None
         try:
             pyperclip.copy(text)
         except Exception as e:
-            print(f"  Presse-papier inaccessible ({e}), saisie directe.")
+            print(f"  Clipboard inaccessible ({e}), direct typing.")
             type_unicode(text)
             return
         try:
-            time.sleep(0.12)                   # Windows s'approprie le presse-papier
+            time.sleep(0.12)                   # Windows takes ownership of the clipboard
             send_ctrl_v()
         finally:
-            # restauration TOUJOURS executee, meme si le collage a echoue
+            # restore ALWAYS runs, even if the paste failed
             if restore and previous is not None:
-                time.sleep(0.4)                # laisse l'app consommer le collage
+                time.sleep(0.4)                # let the app consume the paste
                 try:
                     pyperclip.copy(previous)
                 except Exception:
@@ -1095,22 +1134,22 @@ class STTEngine:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SURVEILLANCE DE LA TOUCHE (poll Win32, thread UI, ~15 ms)
+#  KEY WATCHER (Win32 poll, UI thread, ~15 ms)
 # ═══════════════════════════════════════════════════════════════
 
 class HotkeyWatcher(QObject):
     def __init__(self, engine: "STTEngine"):
         super().__init__()
         self.engine = engine
-        self.vk = KEY_VK.get(engine.cfg["hotkey"], 0x77)
+        self.vk = resolve_hotkey_vk(engine.cfg)
         self._down = False
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
         self._timer.setInterval(15)
         self._timer.start()
 
-    def set_hotkey(self, name: str):
-        self.vk = KEY_VK.get(name, 0x77)
+    def set_hotkey(self, cfg: dict):
+        self.vk = resolve_hotkey_vk(cfg)
         self._down = False
 
     def _poll(self):
@@ -1124,7 +1163,7 @@ class HotkeyWatcher(QObject):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  FENETRE DE REGLAGES
+#  SETTINGS WINDOW
 # ═══════════════════════════════════════════════════════════════
 
 SETTINGS_QSS = """
@@ -1159,12 +1198,26 @@ QPushButton#cancel {
 QPushButton#cancel:hover { color: #E7E3F1; border: 1px solid #8B5CF6; }
 """
 
+def _key_event_label(e) -> str:
+    """Best-effort human label for a captured key event."""
+    t = e.text()
+    if t and t.strip() and t.isprintable():
+        return t.upper()
+    try:
+        s = QKeySequence(e.key()).toString()
+        if s:
+            return s
+    except Exception:
+        pass
+    return f"VK {int(e.nativeVirtualKey())}"
+
+
 class SettingsDialog(QDialog):
     def __init__(self, cfg: dict, on_apply):
         super().__init__()
         self.cfg = cfg
         self.on_apply = on_apply
-        self.setWindowTitle("LouLLabs STT - Parametres")
+        self.setWindowTitle("LouLLabs STT - Settings")
         self.setWindowIcon(app_icon())
         self.setStyleSheet(SETTINGS_QSS)
         self.setMinimumWidth(420)
@@ -1179,7 +1232,7 @@ class SettingsDialog(QDialog):
         root.setContentsMargins(26, 24, 26, 22)
         root.setSpacing(14)
 
-        title = QLabel("Parametres"); title.setObjectName("title")
+        title = QLabel("Settings"); title.setObjectName("title")
         root.addWidget(title)
         root.addWidget(self._sep())
 
@@ -1188,17 +1241,32 @@ class SettingsDialog(QDialog):
         grid.setHorizontalSpacing(16)
         r = 0
 
-        # Touche
-        grid.addWidget(QLabel("Touche push-to-talk"), r, 0)
+        # Push-to-talk key: preset list OR capture any key
+        grid.addWidget(QLabel("Push-to-talk key"), r, 0)
         self.cb_key = QComboBox()
         for k in KEY_VK:
-            self.cb_key.addItem(k.upper().replace("_", " "), k)
+            self.cb_key.addItem(key_display(k), k)
         self.cb_key.setCurrentIndex(max(0, list(KEY_VK).index(self.cfg["hotkey"])
                                         if self.cfg["hotkey"] in KEY_VK else 0))
-        grid.addWidget(self.cb_key, r, 1); r += 1
+        self.cb_key.activated.connect(lambda *_: self._clear_custom_key())
+        self.btn_key = QPushButton("Detect a key…"); self.btn_key.setObjectName("cancel")
+        self.btn_key.clicked.connect(self._start_key_capture)
+        key_row = QHBoxLayout(); key_row.setSpacing(8)
+        key_row.addWidget(self.cb_key, 1); key_row.addWidget(self.btn_key)
+        grid.addLayout(key_row, r, 1); r += 1
 
-        # Langue
-        grid.addWidget(QLabel("Langue"), r, 0)
+        # Custom-key state: a captured key overrides the preset list
+        cvk = self.cfg.get("hotkey_vk")
+        self._custom_vk = cvk if isinstance(cvk, int) and cvk > 0 else None
+        self._custom_label = self.cfg.get("hotkey_label", "") or ""
+        self._capturing_key = False
+        self.lbl_key = QLabel(""); self.lbl_key.setObjectName("hint")
+        self.lbl_key.setWordWrap(True)
+        grid.addWidget(self.lbl_key, r, 0, 1, 2); r += 1
+        self._update_key_hint()
+
+        # Language
+        grid.addWidget(QLabel("Language"), r, 0)
         self.cb_lang = QComboBox()
         for label, code in LANG_CHOICES:
             self.cb_lang.addItem(label, code)
@@ -1206,23 +1274,23 @@ class SettingsDialog(QDialog):
         self.cb_lang.setCurrentIndex(idx)
         grid.addWidget(self.cb_lang, r, 1); r += 1
 
-        # Modele (3 choix exposes ; autres modeles = config.json avance)
-        grid.addWidget(QLabel("Modele"), r, 0)
+        # Model (3 choices exposed; other models = advanced config.json)
+        grid.addWidget(QLabel("Model"), r, 0)
         self.cb_model = QComboBox()
         for mid, friendly, note in RECOMMENDED_MODELS:
             self.cb_model.addItem(f"{friendly}   ·   {mid} ({note})", mid)
-        cur = self.cfg.get("model", "large-v3-turbo")
+        cur = self.cfg.get("model", "small")
         if cur not in [m for m, _, _ in RECOMMENDED_MODELS]:
-            self.cb_model.addItem(f"{cur}  (avance)", cur)
+            self.cb_model.addItem(f"{cur}  (advanced)", cur)
         mdl_idx = next((i for i in range(self.cb_model.count())
                         if self.cb_model.itemData(i) == cur), 0)
         self.cb_model.setCurrentIndex(mdl_idx)
         grid.addWidget(self.cb_model, r, 1); r += 1
 
-        # Micro
+        # Microphone
         grid.addWidget(QLabel("Microphone"), r, 0)
         self.cb_mic = QComboBox()
-        self.cb_mic.addItem("Peripherique par defaut", None)
+        self.cb_mic.addItem("Default device", None)
         try:
             for i, d in enumerate(sd.query_devices()):
                 if d.get("max_input_channels", 0) > 0:
@@ -1235,16 +1303,16 @@ class SettingsDialog(QDialog):
         self.cb_mic.setCurrentIndex(mic_idx)
         grid.addWidget(self.cb_mic, r, 1); r += 1
 
-        # Methode d'insertion du texte
-        grid.addWidget(QLabel("Insertion du texte"), r, 0)
+        # Text insertion method
+        grid.addWidget(QLabel("Text insertion"), r, 0)
         self.cb_insert = QComboBox()
-        self.cb_insert.addItem("Frappe directe (fiable)", "frappe")
-        self.cb_insert.addItem("Presse-papier (Ctrl+V)", "collage")
+        self.cb_insert.addItem("Direct typing (reliable)", "frappe")
+        self.cb_insert.addItem("Clipboard (Ctrl+V)", "collage")
         ins_idx = 0 if self.cfg.get("insert_method", "frappe") != "collage" else 1
         self.cb_insert.setCurrentIndex(ins_idx)
         grid.addWidget(self.cb_insert, r, 1); r += 1
 
-        # Mode de fonctionnement (aucune technique exposee)
+        # Operating mode (no technical detail exposed)
         grid.addWidget(QLabel("Mode"), r, 0)
         self.cb_mode = QComboBox()
         for label, val in MODE_CHOICES:
@@ -1254,66 +1322,119 @@ class SettingsDialog(QDialog):
         self.cb_mode.setCurrentIndex(mode_idx)
         grid.addWidget(self.cb_mode, r, 1); r += 1
 
-        # Acceleration (abstraite : l'utilisateur ne voit jamais CPU/GPU/CUDA)
+        # Acceleration (abstract: the user never sees CPU/GPU/CUDA)
         grid.addWidget(QLabel("Acceleration"), r, 0)
-        acc = QLabel("Automatique  (processeur)")
+        acc = QLabel("Automatic  (processor)")
         acc.setObjectName("hint")
         grid.addWidget(acc, r, 1); r += 1
 
         root.addLayout(grid)
 
-        hint = QLabel("Automatique : equilibre. Performance : pret instantanement, "
-                      "consomme plus. Economie : libere les ressources au repos.")
+        hint = QLabel("Automatic: balanced. Performance: instantly ready, "
+                      "uses more resources. Economy: releases resources at rest.")
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
         root.addWidget(self._sep())
 
-        # Cases a cocher
-        self.chk_start = QCheckBox("Lancer au demarrage de Windows")
+        # Checkboxes
+        self.chk_start = QCheckBox("Start with Windows")
         self.chk_start.setChecked(bool(self.cfg.get("start_with_windows", False)))
         root.addWidget(self.chk_start)
 
-        self.chk_clip = QCheckBox("Restaurer le presse-papier apres collage")
+        self.chk_clip = QCheckBox("Restore the clipboard after paste")
         self.chk_clip.setChecked(bool(self.cfg.get("restore_clipboard", True)))
         root.addWidget(self.chk_clip)
 
-        # Recalibration micro (bruit de fond -> seuil de silence)
+        # Mic recalibration (background noise -> silence threshold)
         cal_row = QHBoxLayout()
-        self.btn_cal = QPushButton("Recalibrer le micro"); self.btn_cal.setObjectName("cancel")
+        self.btn_cal = QPushButton("Recalibrate the mic"); self.btn_cal.setObjectName("cancel")
         self.btn_cal.clicked.connect(self._recalibrate)
-        self.lbl_cal = QLabel(f"seuil actuel : {self.cfg.get('silence_rms', 0.006)}")
+        self.lbl_cal = QLabel(f"current threshold: {self.cfg.get('silence_rms', 0.006)}")
         self.lbl_cal.setObjectName("hint")
         cal_row.addWidget(self.btn_cal); cal_row.addWidget(self.lbl_cal); cal_row.addStretch(1)
         root.addLayout(cal_row)
 
         root.addWidget(self._sep())
 
-        # Boutons
+        # Buttons
         btns = QHBoxLayout(); btns.addStretch(1)
-        b_cancel = QPushButton("Annuler"); b_cancel.setObjectName("cancel")
+        b_cancel = QPushButton("Cancel"); b_cancel.setObjectName("cancel")
         b_cancel.clicked.connect(self.reject)
-        b_save = QPushButton("Enregistrer"); b_save.setObjectName("save")
+        b_save = QPushButton("Save"); b_save.setObjectName("save")
         b_save.clicked.connect(self._save)
         btns.addWidget(b_cancel); btns.addWidget(b_save)
         root.addLayout(btns)
 
     def _recalibrate(self):
-        self.btn_cal.setText("Mesure du bruit...")
+        self.btn_cal.setText("Measuring noise...")
         self.btn_cal.setEnabled(False)
         QApplication.processEvents()
         cal = calibrate_mic(self.cb_mic.currentData())
         if cal:
             self.cfg["silence_rms"] = cal[0]
-            self.lbl_cal.setText(f"calibre : seuil {cal[0]} (bruit {cal[1]})")
+            self.lbl_cal.setText(f"calibrated: threshold {cal[0]} (noise {cal[1]})")
         else:
-            self.lbl_cal.setText("calibration impossible")
-        self.btn_cal.setText("Recalibrer le micro")
+            self.lbl_cal.setText("calibration failed")
+        self.btn_cal.setText("Recalibrate the mic")
         self.btn_cal.setEnabled(True)
 
+    # ─── Custom push-to-talk key capture ─────────────────────────
+    def _clear_custom_key(self):
+        self._custom_vk = None
+        self._custom_label = ""
+        self._update_key_hint()
+
+    def _update_key_hint(self):
+        if self._custom_vk:
+            msg = f"Custom key: {self._custom_label}  (overrides the list above)"
+            # A key that produces a character will ALSO type it while held.
+            if len((self._custom_label or "").strip()) == 1 and self._custom_label.strip().isprintable():
+                msg += "\n⚠ This key also types its character — a function key (F8…) is usually better."
+            self.lbl_key.setText(msg)
+            self.cb_key.setEnabled(False)
+        else:
+            self.lbl_key.setText('Pick a key above, or click "Detect a key" to use any key.')
+            self.cb_key.setEnabled(True)
+
+    def _start_key_capture(self):
+        self._capturing_key = True
+        self.btn_key.setText("Press any key…")
+        self.lbl_key.setText("Listening… press the key you want (Esc to cancel).")
+        self.grabKeyboard()
+
+    def _finish_key_capture(self, vk=None, label=None):
+        self._capturing_key = False
+        try:
+            self.releaseKeyboard()
+        except Exception:
+            pass
+        self.btn_key.setText("Detect a key…")
+        if vk:
+            self._custom_vk = int(vk)
+            self._custom_label = label or f"VK {int(vk)}"
+        self._update_key_hint()
+
+    def keyPressEvent(self, e):
+        if getattr(self, "_capturing_key", False):
+            if e.key() == Qt.Key_Escape:
+                self._finish_key_capture()
+                e.accept(); return
+            vk = int(e.nativeVirtualKey())
+            if vk:
+                self._finish_key_capture(vk, _key_event_label(e))
+            e.accept(); return
+        super().keyPressEvent(e)
+
     def _save(self):
-        self.cfg["hotkey"] = self.cb_key.currentData()
+        if self._custom_vk:
+            self.cfg["hotkey_vk"] = int(self._custom_vk)
+            self.cfg["hotkey_label"] = self._custom_label or f"VK {self._custom_vk}"
+        else:
+            self.cfg["hotkey"] = self.cb_key.currentData()
+            self.cfg["hotkey_vk"] = None
+            self.cfg["hotkey_label"] = ""
         self.cfg["language"] = self.cb_lang.currentData()
         self.cfg["model"] = self.cb_model.currentData()
         self.cfg["mic_device"] = self.cb_mic.currentData()
@@ -1327,15 +1448,15 @@ class SettingsDialog(QDialog):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  ECRAN DE BIENVENUE (1er lancement) — detection seule, sans benchmark impose
+#  WELCOME SCREEN (first launch) — detection only, no forced benchmark
 # ═══════════════════════════════════════════════════════════════
 
 class WelcomeDialog(QDialog):
     def __init__(self, cfg: dict, calibration=None):
         super().__init__()
         self.cfg = cfg
-        self.calibration = calibration   # (seuil, bruit) ou None
-        self.setWindowTitle("Bienvenue - LouLLabs STT")
+        self.calibration = calibration   # (threshold, noise) or None
+        self.setWindowTitle("Welcome - LouLLabs STT")
         self.setWindowIcon(app_icon())
         self.setStyleSheet(SETTINGS_QSS)
         self.setMinimumWidth(460)
@@ -1356,52 +1477,52 @@ class WelcomeDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 26, 28, 22); root.setSpacing(12)
 
-        title = QLabel("Bienvenue dans LouLLabs STT"); title.setObjectName("title")
+        title = QLabel("Welcome to LouLLabs STT"); title.setObjectName("title")
         root.addWidget(title)
-        sub = QLabel("Dictee vocale 100% locale. Voici votre configuration :")
+        sub = QLabel("100% local voice dictation. Here is your configuration:")
         sub.setObjectName("hint"); root.addWidget(sub)
         root.addWidget(self._sep())
 
-        mic = detect_mic() or "peripherique par defaut"
+        mic = detect_mic() or "default device"
         gpu = detect_gpu()
         total, avail = detect_ram_gb()
-        model_id = self.cfg.get("model", "large-v3-turbo")
+        model_id = self.cfg.get("model", "small")
         friendly = next((f for m, f, _ in RECOMMENDED_MODELS if m == model_id), model_id)
 
-        acc = f"Automatique  —  {gpu} detecte" if gpu else "Automatique  —  processeur (CPU)"
-        ram = f"{avail:.1f} Go dispo / {total:.1f} Go" if total else "—"
+        acc = f"Automatic  —  {gpu} detected" if gpu else "Automatic  —  processor (CPU)"
+        ram = f"{avail:.1f} GB free / {total:.1f} GB" if total else "—"
 
         root.addLayout(self._row("🎙️", "Microphone", str(mic)[:46]))
         root.addLayout(self._row("⚡", "Acceleration", acc[:64]))
-        root.addLayout(self._row("🧠", "Memoire", ram))
-        root.addLayout(self._row("🧩", "Modele", f"{friendly}  ({model_id})"))
+        root.addLayout(self._row("🧠", "Memory", ram))
+        root.addLayout(self._row("🧩", "Model", f"{friendly}  ({model_id})"))
         if self.calibration:
-            root.addLayout(self._row("🎚️", "Micro calibre",
-                                     f"seuil de silence auto : {self.calibration[0]}"))
+            root.addLayout(self._row("🎚️", "Mic calibrated",
+                                     f"auto silence threshold: {self.calibration[0]}"))
 
         root.addWidget(self._sep())
-        note = QLabel("Le modele (~1,5 Go) se telecharge a votre premiere dictee, "
-                      "puis tout fonctionne hors-ligne.\n"
-                      "Maintenez F8, parlez, relachez : le texte s'ecrit.")
+        note = QLabel(f"The model (~460 MB) downloads on your first dictation, "
+                      "then everything works offline.\n"
+                      f"Hold {resolve_hotkey_label(self.cfg)}, speak, release: the text is written.")
         note.setObjectName("hint"); note.setWordWrap(True); root.addWidget(note)
 
         btns = QHBoxLayout(); btns.addStretch(1)
-        b = QPushButton("Commencer"); b.setObjectName("save")
+        b = QPushButton("Get started"); b.setObjectName("save")
         b.clicked.connect(self.accept)
         btns.addWidget(b)
         root.addLayout(btns)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  POINT D'ENTREE
+#  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 
 def main():
     print(f"""
   ========================================================
        LouLLabs STT — Speech to Text  v{APP_VERSION}
-       Maintenez une touche  ->  Parlez  ->  Relachez  ->  Colle
-       100% local  -  Whisper  -  Input Win32 natif
+       Hold a key  ->  Speak  ->  Release  ->  Pasted
+       100% local  -  Whisper  -  Native Win32 input
   ========================================================
     """)
 
@@ -1412,22 +1533,22 @@ def main():
     app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)
 
-    hotkey_label = cfg["hotkey"].upper().replace("_", " ")
+    hotkey_label = resolve_hotkey_label(cfg)
     overlay = GlassOverlay(hotkey_label=hotkey_label)
     engine = STTEngine(overlay, cfg)
     watcher = HotkeyWatcher(engine)
 
-    # Applique l'etat "demarrage Windows" au lancement
+    # Apply the "start with Windows" state at launch
     set_start_with_windows(bool(cfg.get("start_with_windows", False)))
 
-    # Mode Performance : precharge le modele au demarrage (pret instantanement)
+    # Performance mode: preload the model at startup (instantly ready)
     if cfg.get("mode") == "performance":
         engine.request_model()
 
     # ── System tray ──
     tray = QSystemTrayIcon(app)
     tray.setIcon(app_icon())
-    tray.setToolTip(f"LouLLabs STT - {hotkey_label} pour parler")
+    tray.setToolTip(f"LouLLabs STT - {hotkey_label} to speak")
 
     menu = QMenu()
     menu.setStyleSheet("""
@@ -1442,21 +1563,21 @@ def main():
 
     act_status = menu.addAction("LouLLabs STT"); act_status.setEnabled(False)
     menu.addSeparator()
-    act_hint = menu.addAction(f"{hotkey_label} : maintenir pour parler")
+    act_hint = menu.addAction(f"{hotkey_label} : hold to speak")
     act_hint.setEnabled(False)
     menu.addSeparator()
-    act_settings = menu.addAction("Parametres...")
-    act_quit = menu.addAction("Quitter")
+    act_settings = menu.addAction("Settings...")
+    act_quit = menu.addAction("Quit")
     tray.setContextMenu(menu)
     tray.show()
 
-    # ── Ouverture des reglages ──
+    # ── Opening the settings ──
     def apply_cfg(new_cfg):
-        label = new_cfg["hotkey"].upper().replace("_", " ")
+        label = resolve_hotkey_label(new_cfg)
         overlay.set_hotkey_label(label)
-        watcher.set_hotkey(new_cfg["hotkey"])
-        tray.setToolTip(f"LouLLabs STT - {label} pour parler")
-        act_hint.setText(f"{label} : maintenir pour parler")
+        watcher.set_hotkey(new_cfg)
+        tray.setToolTip(f"LouLLabs STT - {label} to speak")
+        act_hint.setText(f"{label} : hold to speak")
         set_start_with_windows(bool(new_cfg.get("start_with_windows", False)))
         engine.touch()
 
@@ -1471,36 +1592,36 @@ def main():
             open_settings()
     tray.activated.connect(on_tray_activated)
 
-    # ── Timer de dechargement RAM (verifie toutes les 30 s) ──
+    # ── RAM unload timer (checks every 30 s) ──
     idle_timer = QTimer()
     idle_timer.timeout.connect(engine.unload_model_if_idle)
     idle_timer.start(30_000)
 
-    # ── Quitter proprement ──
+    # ── Quit cleanly ──
     def quitter():
-        print("\n  Au revoir !")
+        print("\n  Goodbye!")
         engine.stop()
         tray.hide()
         app.quit()
     act_quit.triggered.connect(quitter)
 
-    # ── Ecran de bienvenue + calibration micro (une seule fois) ──
+    # ── Welcome screen + mic calibration (only once) ──
     if not cfg.get("first_run_done"):
-        cal = calibrate_mic(cfg.get("mic_device"))   # ~1 s, mesure le bruit de fond
+        cal = calibrate_mic(cfg.get("mic_device"))   # ~1 s, measures background noise
         if cal:
             cfg["silence_rms"] = cal[0]
-            print(f"  Micro calibre : bruit={cal[1]}, seuil de silence={cal[0]}")
+            print(f"  Mic calibrated: noise={cal[1]}, silence threshold={cal[0]}")
         try:
             WelcomeDialog(cfg, calibration=cal).exec()
         except Exception as e:
-            print(f"  Bienvenue : {e}")
+            print(f"  Welcome: {e}")
         cfg["first_run_done"] = True
         save_config(cfg)
 
-    # ── Message de bienvenue ──
+    # ── Welcome message ──
     QTimer.singleShot(400, overlay.signals.show_ready.emit)
-    print(f"  Pret. Maintenez [{hotkey_label}] pour dicter. "
-          f"Clic droit sur l'icone pour les reglages.\n")
+    print(f"  Ready. Hold [{hotkey_label}] to dictate. "
+          f"Right-click the icon for settings.\n")
 
     sys.exit(app.exec())
 
