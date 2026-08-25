@@ -32,8 +32,11 @@ aucune télémétrie. Le modèle Whisper tourne sur le CPU (quantifié `int8`).
 - **Privé par défaut** — audio jamais écrit sur le disque, zéro réseau après le téléchargement du modèle, zéro télémétrie.
 - **Pas de keylogger** — aucun hook clavier global. La touche est lue via l'API Win32 `GetAsyncKeyState` (une seule touche), **sans droits administrateur**. Voir [SECURITY.md](SECURITY.md).
 - **RAM ~0 au repos** — le modèle se charge à la demande et se **décharge automatiquement** après inactivité ; il est préchargé pendant que vous parlez pour masquer la latence.
-- **Insertion fiable** — le texte est **tapé directement** dans le champ actif (sans toucher au presse-papier). Mode Ctrl+V disponible en option.
-- **Réglable sans code** — clic droit sur l'icône de la barre des tâches → *Paramètres* (touche, langue, modèle, micro, mémoire, démarrage Windows).
+- **Deux modes simples** — *Automatique* (par défaut), *Performance* (prêt instantanément) ou *Économie* (libère les ressources au repos). Aucun jargon technique exposé.
+- **Transcription fidèle** — le texte est transcrit **fidèlement à votre voix, sans reformulation par une IA**. Aucun post-traitement, aucun LLM, aucune « correction intelligente ».
+- **Anti-hallucination** — un appui accidentel sur un silence n'écrit rien : les hallucinations connues de Whisper (« Sous-titres réalisés par… », etc.) et les quasi-silences sont filtrés.
+- **Insertion fiable** — le texte est **tapé directement** dans le champ actif (sans toucher au presse-papier), avec repli automatique sur Ctrl+V.
+- **Réglable sans code** — clic droit sur l'icône de la barre des tâches → *Paramètres* (touche, langue, modèle, micro, mode, démarrage Windows).
 - **Interface soignée** — overlay « liquid glass » translucide et mascotte LouLLabs.
 
 ---
@@ -68,17 +71,18 @@ Ou, sans ligne de commande : double-cliquez sur **`installer.bat`** puis **`lanc
 ## ⚙️ Paramètres
 
 Tout est réglable depuis la fenêtre *Paramètres* (clic droit sur l'icône) :
-touche push-to-talk, langue (ou détection auto), **modèle** (`tiny` → `large-v3`),
-microphone, **méthode d'insertion** (frappe directe / Ctrl+V),
-**libération de la RAM** après N minutes (`0` = toujours chargé), lancement au démarrage de Windows.
-Config stockée dans `%APPDATA%\LouLLabs_STT\config.json`.
+touche push-to-talk, langue (ou détection auto), **modèle** (3 choix), microphone,
+**méthode d'insertion** (frappe directe / Ctrl+V), **mode** (Automatique / Performance / Économie),
+**accélération** (Automatique) et lancement au démarrage de Windows.
+Config stockée dans `%APPDATA%\LouLLabs_STT\config.json` (les modèles avancés — `tiny`, `medium`, `large-v3` — s'y ajoutent à la main).
 
 | Modèle | Taille | Qualité FR | Vitesse |
 |--------|--------|------------|---------|
+| `base` | ~140 Mo | Correcte | Très rapide |
 | `small` | ~460 Mo | Bonne | Rapide |
-| `medium` | ~1,5 Go | Très bonne | Moyenne |
 | `large-v3-turbo` ⭐ | ~1,5 Go | Excellente | Bonne |
-| `large-v3` | ~3 Go | Excellente | Plus lente |
+
+**Modes.** *Automatique* : équilibre (déchargement après quelques minutes). *Performance* : modèle préchargé au démarrage, prêt instantanément, consomme davantage. *Économie* : RAM libérée rapidement dès l'inactivité.
 
 ---
 

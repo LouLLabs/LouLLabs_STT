@@ -65,7 +65,7 @@ except ImportError as e:
 
 
 APP_NAME = "LouLLabs_STT"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 
 # ═══════════════════════════════════════════════════════════════
 #  CHEMINS / RESSOURCES
@@ -97,7 +97,8 @@ DEFAULT_CONFIG = {
     "beam_size": 3,             # 1 = rapide, 5 = qualite max
     "min_duration": 0.3,        # ignore les appuis < 300 ms
     "mic_device": None,         # index du micro (None = peripherique par defaut)
-    "idle_unload_minutes": 3,   # decharge le modele apres X min sans usage (0 = jamais)
+    "mode": "auto",             # "auto" | "performance" | "eco" (gestion des ressources)
+    "idle_unload_minutes": 3,   # (mode auto, avance) delai de dechargement si defini
     "start_with_windows": False,
     "insert_method": "frappe",  # "frappe" = saisie directe (fiable, sans presse-papier)
                                 # "collage" = presse-papier + Ctrl+V
@@ -114,11 +115,53 @@ KEY_VK = {
 }
 
 MODEL_CHOICES = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
+# Seuls 3 modeles sont exposes dans l'interface (le reste = config.json avance)
+RECOMMENDED_MODELS = [
+    ("large-v3-turbo", "Recommande — meilleure qualite / rapidite"),
+    ("small",          "Plus leger"),
+    ("base",           "Tres leger"),
+]
 COMPUTE_CHOICES = ["int8", "int8_float16", "float16", "float32"]
 LANG_CHOICES = [
     ("Francais", "fr"), ("Anglais", "en"), ("Espagnol", "es"),
     ("Allemand", "de"), ("Italien", "it"), ("Detection auto", ""),
 ]
+
+# Modes de gestion des ressources (l'utilisateur ne voit jamais la technique)
+MODE_CHOICES = [
+    ("Automatique", "auto"),
+    ("Performance", "performance"),
+    ("Economie", "eco"),
+]
+
+# ── Garde-fou anti-hallucination ────────────────────────────────
+# Whisper "invente" parfois du texte sur un silence (appui accidentel).
+# Ces phrases, tres frequentes, ne sont jamais dictees volontairement.
+import re as _re
+import unicodedata as _ud
+
+def _normalize(s: str) -> str:
+    s = _ud.normalize("NFD", s.lower())
+    s = "".join(c for c in s if _ud.category(c) != "Mn")   # retire les accents
+    return _re.sub(r"\s+", " ", _re.sub(r"[^0-9a-z]+", " ", s)).strip()
+
+HALLUCINATION_BLOCKLIST = {_normalize(x) for x in [
+    "Sous-titres realises par la communaute d'Amara.org",
+    "Sous-titres realises para la communaute d'Amara.org",
+    "Sous-titrage ST' 501",
+    "Sous-titres fait par la communaute d'Amara.org",
+    "Merci d'avoir regarde cette video",
+    "Merci d'avoir regarde",
+    "Merci a tous et a la prochaine",
+    "Abonnez-vous",
+    "Merci",
+    "Thank you for watching",
+    "Thanks for watching",
+    "Please subscribe",
+    "you",
+    "Bye",
+]}
+SILENCE_RMS = 0.006     # en dessous : quasi-silence (appui accidentel probable)
 
 # Palette LouLLabs
 VIOLET = QColor(139, 92, 246)
@@ -745,9 +788,19 @@ class STTEngine:
             print(f"  Erreur de chargement du modele : {e}")
             self.overlay.signals.show_error.emit("Chargement du modele impossible")
 
+    def _idle_minutes(self) -> int:
+        """Delai de dechargement selon le mode (0 = jamais)."""
+        m = self.cfg.get("mode", "auto")
+        if m == "performance":
+            return 0            # modele garde en memoire
+        if m == "eco":
+            return 2            # libere vite les ressources
+        adv = self.cfg.get("idle_unload_minutes")   # override avance (mode auto)
+        return adv if isinstance(adv, int) and adv > 0 else 4
+
     def unload_model_if_idle(self):
         """Appele periodiquement : libere la RAM apres inactivite."""
-        minutes = self.cfg.get("idle_unload_minutes", 3)
+        minutes = self._idle_minutes()
         if not minutes or self.recording or self.model is None:
             return
         if time.time() - self._last_activity > minutes * 60:
@@ -844,16 +897,33 @@ class STTEngine:
             elapsed = time.time() - t0
             self.touch()
 
-            if text:
+            if text and not self._should_suppress(text, audio):
                 self._paste(text)
                 print(f"  [{elapsed:.1f}s] -> {text}")
                 self.overlay.signals.show_success.emit(text)
             else:
-                print(f"  Aucun texte detecte ({elapsed:.1f}s)")
+                print(f"  Aucune parole exploitable ({elapsed:.1f}s)")
                 self.overlay.signals.hide_overlay.emit()
         except Exception as e:
             print(f"  Erreur de transcription : {e}")
             self.overlay.signals.show_error.emit("Erreur de transcription")
+
+    def _should_suppress(self, text: str, audio) -> bool:
+        """Filtre les hallucinations de Whisper (silence / appui accidentel)."""
+        norm = _normalize(text)
+        if not norm:
+            return True
+        if norm in HALLUCINATION_BLOCKLIST:
+            print(f"  Hallucination ignoree : {text!r}")
+            return True
+        try:
+            rms = float(np.sqrt(np.mean(np.square(audio))))
+        except Exception:
+            rms = 1.0
+        if rms < SILENCE_RMS and len(norm) < 40:
+            print(f"  Quasi-silence (rms={rms:.4f}), texte ignore : {text!r}")
+            return True
+        return False
 
     def _paste(self, text: str):
         """Insere le texte dans la fenetre active."""
@@ -1007,11 +1077,17 @@ class SettingsDialog(QDialog):
         self.cb_lang.setCurrentIndex(idx)
         grid.addWidget(self.cb_lang, r, 1); r += 1
 
-        # Modele
+        # Modele (3 choix exposes ; autres modeles = config.json avance)
         grid.addWidget(QLabel("Modele"), r, 0)
         self.cb_model = QComboBox()
-        self.cb_model.addItems(MODEL_CHOICES)
-        self.cb_model.setCurrentText(self.cfg["model"])
+        for mid, desc in RECOMMENDED_MODELS:
+            self.cb_model.addItem(f"{mid}  —  {desc}", mid)
+        cur = self.cfg.get("model", "large-v3-turbo")
+        if cur not in [m for m, _ in RECOMMENDED_MODELS]:
+            self.cb_model.addItem(f"{cur}  (avance)", cur)
+        mdl_idx = next((i for i in range(self.cb_model.count())
+                        if self.cb_model.itemData(i) == cur), 0)
+        self.cb_model.setCurrentIndex(mdl_idx)
         grid.addWidget(self.cb_model, r, 1); r += 1
 
         # Micro
@@ -1039,19 +1115,28 @@ class SettingsDialog(QDialog):
         self.cb_insert.setCurrentIndex(ins_idx)
         grid.addWidget(self.cb_insert, r, 1); r += 1
 
-        # Dechargement RAM
-        grid.addWidget(QLabel("Liberer la RAM apres (min)"), r, 0)
-        self.sp_idle = QSpinBox()
-        self.sp_idle.setRange(0, 120)
-        self.sp_idle.setValue(int(self.cfg.get("idle_unload_minutes", 3)))
-        self.sp_idle.setSpecialValueText("Jamais")
-        grid.addWidget(self.sp_idle, r, 1); r += 1
+        # Mode de fonctionnement (aucune technique exposee)
+        grid.addWidget(QLabel("Mode"), r, 0)
+        self.cb_mode = QComboBox()
+        for label, val in MODE_CHOICES:
+            self.cb_mode.addItem(label, val)
+        cur_mode = self.cfg.get("mode", "auto")
+        mode_idx = next((i for i, (_, v) in enumerate(MODE_CHOICES) if v == cur_mode), 0)
+        self.cb_mode.setCurrentIndex(mode_idx)
+        grid.addWidget(self.cb_mode, r, 1); r += 1
+
+        # Acceleration (abstraite : l'utilisateur ne voit jamais CPU/GPU/CUDA)
+        grid.addWidget(QLabel("Acceleration"), r, 0)
+        acc = QLabel("Automatique  (processeur)")
+        acc.setObjectName("hint")
+        grid.addWidget(acc, r, 1); r += 1
 
         root.addLayout(grid)
 
-        hint = QLabel("0 = le modele reste en memoire (dictee instantanee).\n"
-                      "Sinon la RAM est liberee apres ce delai sans usage.")
+        hint = QLabel("Automatique : equilibre. Performance : pret instantanement, "
+                      "consomme plus. Economie : libere les ressources au repos.")
         hint.setObjectName("hint")
+        hint.setWordWrap(True)
         root.addWidget(hint)
 
         root.addWidget(self._sep())
@@ -1079,10 +1164,10 @@ class SettingsDialog(QDialog):
     def _save(self):
         self.cfg["hotkey"] = self.cb_key.currentData()
         self.cfg["language"] = self.cb_lang.currentData()
-        self.cfg["model"] = self.cb_model.currentText()
+        self.cfg["model"] = self.cb_model.currentData()
         self.cfg["mic_device"] = self.cb_mic.currentData()
         self.cfg["insert_method"] = self.cb_insert.currentData()
-        self.cfg["idle_unload_minutes"] = self.sp_idle.value()
+        self.cfg["mode"] = self.cb_mode.currentData()
         self.cfg["start_with_windows"] = self.chk_start.isChecked()
         self.cfg["restore_clipboard"] = self.chk_clip.isChecked()
         save_config(self.cfg)
@@ -1117,6 +1202,10 @@ def main():
 
     # Applique l'etat "demarrage Windows" au lancement
     set_start_with_windows(bool(cfg.get("start_with_windows", False)))
+
+    # Mode Performance : precharge le modele au demarrage (pret instantanement)
+    if cfg.get("mode") == "performance":
+        engine.request_model()
 
     # ── System tray ──
     tray = QSystemTrayIcon(app)
