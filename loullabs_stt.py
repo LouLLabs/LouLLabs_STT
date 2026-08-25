@@ -65,7 +65,7 @@ except ImportError as e:
 
 
 APP_NAME = "LouLLabs_STT"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 
 # ═══════════════════════════════════════════════════════════════
 #  CHEMINS / RESSOURCES
@@ -147,23 +147,25 @@ def _normalize(s: str) -> str:
     s = "".join(c for c in s if _ud.category(c) != "Mn")   # retire les accents
     return _re.sub(r"\s+", " ", _re.sub(r"[^0-9a-z]+", " ", s)).strip()
 
+# Principe : faux positif > faux negatif. On prefere laisser passer une
+# hallucination rare plutot que de "manger" une vraie phrase. Donc la blacklist
+# ne contient QUE des phrases multi-mots jamais dictees volontairement ; les mots
+# courts frequents ("merci", "oui", "ok"...) NE sont PAS ici (un utilisateur peut
+# les dicter) — ils sont geres par la confiance du modele (no_speech / logprob).
 HALLUCINATION_BLOCKLIST = {_normalize(x) for x in [
     "Sous-titres realises par la communaute d'Amara.org",
     "Sous-titres realises para la communaute d'Amara.org",
     "Sous-titrage ST' 501",
     "Sous-titres fait par la communaute d'Amara.org",
     "Merci d'avoir regarde cette video",
-    "Merci d'avoir regarde",
+    "Merci d'avoir regarde cette video a bientot",
     "Merci a tous et a la prochaine",
-    "Abonnez-vous",
-    "Merci",
     "Thank you for watching",
-    "Thanks for watching",
-    "Please subscribe",
-    "you",
-    "Bye",
+    "Thanks for watching this video",
+    "Please subscribe to my channel",
 ]}
-SILENCE_RMS = 0.006     # en dessous : quasi-silence (appui accidentel probable)
+SILENCE_RMS = 0.006     # sous ce seuil : quasi-silence (valide sur enregistrements reels :
+                        # parole >= 0.015, silence ~ 0.0001)
 
 # Palette LouLLabs
 VIOLET = QColor(139, 92, 246)
