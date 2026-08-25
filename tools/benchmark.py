@@ -208,16 +208,21 @@ def _run_faster_whisper(corpus, model_size, compute, device, repeats, method):
              "cr": max(cr) if cr else 1.0}
         return text, m
 
+    print(f"\nPréparation du modèle « {model_size} » ({compute}) sur {device}...")
+    print("  ⏳  1er lancement : téléchargement ~1,5 Go depuis Hugging Face.")
+    print("      Une barre de progression va s'afficher — LAISSEZ FINIR (plusieurs minutes).\n")
     t0 = time.perf_counter()
     model = WhisperModel(model_size, device=device, compute_type=compute,
                          cpu_threads=max(1, (os.cpu_count() or 2) // 2), num_workers=1)
-    transcribe(model, corpus[0][1])
+    transcribe(model, corpus[0][1])   # 1re inférence = "cold start"
     cold = time.perf_counter() - t0
+    print(f"  ✓ Modèle prêt (cold start {cold:.1f} s).\n")
 
+    print(f"Mesure de {len(corpus)} échantillons × {repeats} répétition(s) :")
     rows = []
-    for p, audio in corpus:
-        lats = []
-        text, m = "", {}
+    for idx, (p, audio) in enumerate(corpus, 1):
+        print(f"  [{idx:>2}/{len(corpus)}] {p['id']:<12} ({p['cls']})", end=" ", flush=True)
+        lats, text, m = [], "", {}
         for _ in range(repeats):
             t = time.perf_counter()
             text, m = transcribe(model, audio)
@@ -226,6 +231,11 @@ def _run_faster_whisper(corpus, model_size, compute, device, repeats, method):
         w = wer(p["ref"], text) if (p["expect"] == "text" and p["ref"]) else None
         rows.append(dict(p=p, text=text, lat_ms=lats, suppressed=sup, wer=w,
                          perceived_ms=float(np.median(lats)) + insertion_ms(text, method)))
+        wtxt = "-" if w is None else f"WER {w * 100:.0f}%"
+        flag = "FILTRÉ" if sup else "ok"
+        if p["expect"] == "text" and sup:
+            flag = "⚠️ FAUX POSITIF"
+        print(f"→ {np.median(lats):>5.0f} ms  {wtxt:<9} {flag}")
     return dict(backend=device, model=model_size, compute=compute, repeats=repeats,
                 method=method, cold_start_s=round(cold, 2), rows=rows)
 
@@ -269,18 +279,44 @@ def report(res):
     if fp:
         print("  ⚠️  Au moins une vraie phrase a été filtrée : desserrer les seuils.")
 
+    # Agrégats globaux (hors silence)
+    spoken = [r for r in rows if r["p"]["expect"] == "text"]
+    all_lat = [x for r in spoken for x in r["lat_ms"]]
+    wl = [r["wer"] for r in spoken if r["wer"] is not None]
+    perc = [r["perceived_ms"] for r in spoken]
+
     out = os.path.join(DATA_DIR, f"result_{res['backend']}_{res['model']}.json")
     serial = dict(res); serial["rows"] = [
         dict(id=r["p"]["id"], cls=r["p"]["cls"], expect=r["p"]["expect"],
              text=r["text"], wer=r["wer"], suppressed=r["suppressed"],
              lat_ms=[round(x, 1) for x in r["lat_ms"]],
              perceived_ms=round(r["perceived_ms"], 1)) for r in rows]
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(serial, f, indent=2, ensure_ascii=False)
-    print("\n  Rapport JSON :", out)
-    print("\n  Décision : ne pas choisir « le plus rapide » mais « la meilleure")
-    print("  expérience globale » = latence perçue P50/P95 + WER + stabilité +")
-    print("  cold start + ressources. Comparez ce JSON entre backends.\n")
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(serial, f, indent=2, ensure_ascii=False)
+        saved = out
+    except Exception as e:
+        saved = f"(échec écriture JSON : {e})"
+
+    # ── Résumé copiable (même sans le JSON) ──
+    print("\n" + "=" * 44)
+    print("  LouLLabs Benchmark")
+    print("=" * 44)
+    print(f"  Modèle       : {res['model']}")
+    print(f"  Backend      : {res['backend']}   Précision : {res['compute']}")
+    print(f"  Répétitions  : {res['repeats']}")
+    print(f"  Cold start   : {res['cold_start_s']:.1f} s")
+    print(f"  Latence P50  : {np.median(all_lat):.0f} ms")
+    print(f"  Latence P95  : {np.percentile(all_lat, 95):.0f} ms")
+    print(f"  Perçue P50   : {np.median(perc):.0f} ms  (inférence + insertion « {res['method']} »)")
+    print(f"  WER moyen    : {np.mean(wl) * 100:.1f} %" if wl else "  WER moyen    : -")
+    print(f"  Faux rejets  : {fp} / {len(spoken)}")
+    print("=" * 44)
+    print(f"  JSON : {saved}")
+    print("=" * 44)
+    print("  ↳ Copie-colle ce bloc si tu ne récupères pas le JSON.")
+    print("  Décision = meilleure EXPÉRIENCE globale (latence perçue P50/P95 +")
+    print("  WER + faux rejets + stabilité + cold start), pas « le plus rapide ».\n")
 
 
 def main():
@@ -294,6 +330,10 @@ def main():
     ap.add_argument("--insert", default="frappe", choices=["frappe", "collage"])
     args = ap.parse_args()
 
+    print("=" * 44)
+    print("  LouLLabs STT — Benchmark")
+    print("=" * 44)
+
     if args.record:
         record_missing(force=True)
     elif not args.run:
@@ -301,8 +341,9 @@ def main():
 
     corpus = load_corpus()
     if corpus is None:
-        print("Corpus incomplet. Lancez :  python tools/benchmark.py --record")
+        print("Corpus incomplet. Lancez d'abord :  python tools/benchmark.py --record")
         sys.exit(1)
+    print(f"Corpus : {len(corpus)} échantillons prêts. Backend « {args.backend} ».")
 
     try:
         res = run_backend(args.backend, corpus, args.model, args.compute,
@@ -310,6 +351,17 @@ def main():
     except NotImplementedError as e:
         print(f"\n{e}\n(À implémenter en vague 2 — voir le TODO dans run_backend.)")
         sys.exit(2)
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Interrompu. Le modèle n'a peut-être pas fini de se télécharger.")
+        print("   Relancez  python tools/benchmark.py --run  et laissez la barre finir.")
+        sys.exit(130)
+    except Exception as e:
+        import traceback
+        print("\n\n❌  Le benchmark a échoué :", e)
+        print("--- détails ---")
+        traceback.print_exc()
+        print("\n↳ Copie-colle ces dernières lignes, je corrige.")
+        sys.exit(3)
     report(res)
 
 
